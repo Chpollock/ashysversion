@@ -1,3 +1,5 @@
+import { EV, countEvents } from './events.js';
+
 // Pure backgammon rules — no React, fully testable.
 //
 // Board layout (points 0–23):
@@ -52,12 +54,20 @@ export function createInitialState() {
     phase: 'rolling',  // 'rolling' | 'moving' | 'gameover'
     winner: null,
     selectedPoint: null, // point index or 'bar' of the selected piece
-    // Shuffled lookup: pieceImages[player][n] → index into the piece-NN.png array.
-    // Stable for the whole game; fresh each NEW_GAME so pieces look different.
     pieceImages: {
       ashton:  shuffledIndices(),
       charlie: shuffledIndices(),
     },
+    // Snapshot of the board state at the start of Ashton's moving phase.
+    // Stored so UNDO can restore to just-rolled state (keeping dice, undoing moves).
+    turnStartSnapshot: null,
+    // Event log for achievements + post-game snippet (see game/events.js).
+    eventLog: [],
+    // Pip tracking — peak deficit Ashton faced this game (for comeback detection).
+    pipStats: { ashtonMaxDeficit: 0 },
+    // Maps die INDEX → the move it consumed this turn: { [i]: { from, to } }.
+    // Powers the "hover a die to see which piece it moved" UI. Reset each turn.
+    dieMoves: {},
   };
 }
 
@@ -96,6 +106,20 @@ export function availableDice(state) {
   return state.dice.filter((_, i) => !state.usedDice.includes(i));
 }
 
+// Pip count = total distance a player must still travel to bear off everything.
+// Ashton moves 23→0 (off past 0), so a piece at point i is (i+1) pips out.
+// Charlie moves 0→23 (off past 23), so a piece at point i is (24-i) pips out.
+// Bar pieces count as 25 (furthest possible re-entry distance).
+export function pipCount(state, player) {
+  let pips = state.bar[player] * 25;
+  for (let i = 0; i < 24; i++) {
+    const pt = state.points[i];
+    if (pt.player !== player) continue;
+    pips += pt.count * (player === 'ashton' ? i + 1 : 24 - i);
+  }
+  return pips;
+}
+
 // ─── Move Validation ─────────────────────────────────────────────────────────
 
 // Can player land on destPoint?
@@ -126,7 +150,6 @@ export function legalMovesForDie(state, fromPoint, die) {
   if (points[fromPoint].player !== player || points[fromPoint].count === 0) return [];
 
   const canBearOff = allInHome(state, player);
-  const [homeLo, homeHi] = homeRange(player);
   const dest = fromPoint + direction(player) * die;
 
   if (dest >= 0 && dest <= 23) {
@@ -213,27 +236,48 @@ export function allLegalMoves(state) {
 
 export function gameReducer(state, action) {
   switch (action.type) {
-    case 'ROLL_DICE': return handleRollDice(state);
+    case 'ROLL_DICE': return handleRollDice(state, action);
     case 'SELECT_PIECE': return handleSelectPiece(state, action.point);
     case 'MOVE_PIECE': return handleMovePiece(state, action.from, action.to);
+    case 'MOVE_PATH': return handleMovePath(state, action.steps);
     case 'END_TURN': return handleEndTurn(state);
+    case 'UNDO': return handleUndo(state);
     case 'NEW_GAME': return createInitialState();
     default: return state;
   }
 }
 
-function handleRollDice(state) {
-  if (state.phase !== 'rolling') return state;
+// Roll two dice; doubles yields four moves. Kept OUTSIDE the reducer so the
+// reducer stays pure (the component passes the result in via the action payload).
+export function rollDiceValues() {
   const d1 = Math.floor(Math.random() * 6) + 1;
   const d2 = Math.floor(Math.random() * 6) + 1;
-  // Doubles = four moves
-  const dice = d1 === d2 ? [d1, d1, d1, d1] : [d1, d2];
+  return d1 === d2 ? [d1, d1, d1, d1] : [d1, d2];
+}
 
-  const next = { ...state, dice, usedDice: [], phase: 'moving', selectedPoint: null };
+function handleRollDice(state, action) {
+  if (state.phase !== 'rolling') return state;
+  // Dice come from the action payload (pure reducer); fall back to a roll for tests.
+  const dice = action?.dice ?? rollDiceValues();
+  const isDoubles = dice.length === 4;
+
+  // Record doubles in the event log
+  let eventLog = state.eventLog;
+  if (isDoubles) {
+    eventLog = [...eventLog, { type: EV.DOUBLES_ROLLED, player: state.currentPlayer, value: dice[0] }];
+  }
+
+  const next = { ...state, dice, usedDice: [], phase: 'moving', selectedPoint: null, eventLog, dieMoves: {} };
 
   // If no legal moves exist, auto-pass
   if (allLegalMoves(next).length === 0) {
-    return { ...next, phase: 'rolling', currentPlayer: opponent(state.currentPlayer), dice: [], usedDice: [] };
+    return { ...next, phase: 'rolling', currentPlayer: opponent(state.currentPlayer), dice: [], usedDice: [], turnStartSnapshot: null, dieMoves: {} };
+  }
+
+  // Save undo snapshot for Ashton only (state as-of-roll, moves undone)
+  if (state.currentPlayer === 'ashton') {
+    const snapshot = { ...next, turnStartSnapshot: null };
+    return { ...next, turnStartSnapshot: snapshot };
   }
 
   return next;
@@ -262,36 +306,32 @@ function handleSelectPiece(state, point) {
   return { ...state, selectedPoint: point };
 }
 
-function handleMovePiece(state, from, to) {
-  if (state.phase !== 'moving') return state;
-
-  // Find which die value enables this move
+// Apply ONE single-die move and return the new state — WITHOUT auto-ending the
+// turn. Returns null if the move isn't legal with any available die. Sets
+// phase 'gameover' if it wins. Used by both single moves and combined paths.
+function consumeMove(state, from, to) {
+  // Find which available die value enables from→to
   const avail = availableDice(state);
   const uniqueDice = [...new Set(avail)];
   let usedDie = null;
-
   for (const die of uniqueDice) {
-    const legal = legalMovesForDie(state, from, die);
-    if (legal.some(m => m.to === to)) {
-      usedDie = die;
-      break;
-    }
+    if (legalMovesForDie(state, from, die).some(m => m.to === to)) { usedDie = die; break; }
   }
-  if (usedDie === null) return state;
+  if (usedDie === null) return null;
 
-  // Find the first unused index of that die value
   const dieIdx = state.dice.findIndex((d, i) => d === usedDie && !state.usedDice.includes(i));
-  if (dieIdx === -1) return state;
+  if (dieIdx === -1) return null;
 
-  let points = state.points.map(p => ({ ...p }));
-  let bar = { ...state.bar };
-  let borneOff = { ...state.borneOff };
+  const points = state.points.map(p => ({ ...p }));
+  const bar = { ...state.bar };
+  const borneOff = { ...state.borneOff };
+  let eventLog = state.eventLog;
   const player = state.currentPlayer;
   const opp = opponent(player);
 
-  // Remove piece from source
   if (from === 'bar') {
     bar[player]--;
+    eventLog = [...eventLog, { type: EV.BAR_ENTER, player, point: to }];
   } else {
     points[from] = { ...points[from], count: points[from].count - 1 };
     if (points[from].count === 0) points[from] = { count: 0, player: null };
@@ -299,38 +339,91 @@ function handleMovePiece(state, from, to) {
 
   if (to === 'off') {
     borneOff[player]++;
+    eventLog = [...eventLog, { type: EV.PIECE_BORNE_OFF, player, point: from }];
   } else {
-    // Hit opponent blot?
     if (points[to].player === opp && points[to].count === 1) {
       bar[opp]++;
       points[to] = { count: 0, player: null };
+      eventLog = [
+        ...eventLog,
+        { type: EV.BLOT_HIT, player, point: to },
+        { type: EV.GOT_HIT, player: opp, point: to },
+      ];
     }
-    // Place piece
     points[to] = { count: points[to].count + 1, player };
   }
 
   const usedDice = [...state.usedDice, dieIdx];
+  const dieMoves = { ...state.dieMoves, [dieIdx]: { from, to } };
 
-  // Check win
+  // Track Ashton's peak pip deficit (for comeback achievements)
+  let pipStats = state.pipStats;
+  const afterMove = { ...state, points, bar, borneOff };
+  const deficit = pipCount(afterMove, 'ashton') - pipCount(afterMove, 'charlie');
+  if (deficit > pipStats.ashtonMaxDeficit) pipStats = { ...pipStats, ashtonMaxDeficit: deficit };
+
+  // Win?
   if (borneOff[player] === 15) {
-    return { ...state, points, bar, borneOff, usedDice, phase: 'gameover', winner: player, selectedPoint: null };
+    let finalLog = eventLog;
+    if (borneOff[opp] === 0) finalLog = [...finalLog, { type: EV.GAMMON_WON, player }];
+    if (player === 'ashton' && pipStats.ashtonMaxDeficit > 30) {
+      finalLog = [...finalLog, { type: EV.WON_FROM_BEHIND, player, deficit: pipStats.ashtonMaxDeficit }];
+    }
+    if (player === 'ashton' && countEvents(finalLog, EV.DOUBLES_ROLLED, 'ashton') === 0) {
+      finalLog = [...finalLog, { type: EV.NO_DOUBLES_ALL_GAME, player }];
+    }
+    const hits = countEvents(finalLog, EV.BLOT_HIT, player);
+    if (hits >= 5) finalLog = [...finalLog, { type: EV.FIVE_PLUS_HITS, player, count: hits }];
+    return { ...state, points, bar, borneOff, usedDice, dieMoves, pipStats, eventLog: finalLog, phase: 'gameover', winner: player, selectedPoint: null };
   }
 
-  const next = { ...state, points, bar, borneOff, usedDice, selectedPoint: null };
+  return { ...state, points, bar, borneOff, usedDice, dieMoves, pipStats, eventLog, selectedPoint: null };
+}
 
-  // Auto-end turn if all dice used or no legal moves remain
-  const remainingMoves = allLegalMoves(next);
-  if (usedDice.length === state.dice.length || remainingMoves.length === 0) {
-    return endTurn(next);
+// End the turn automatically when all dice are spent or no legal move remains.
+function settleAfterMoves(state) {
+  if (state.phase !== 'moving') return state; // already won/ended
+  if (state.usedDice.length === state.dice.length || allLegalMoves(state).length === 0) {
+    return endTurn(state);
   }
+  return state;
+}
 
-  return next;
+function handleMovePiece(state, from, to) {
+  if (state.phase !== 'moving') return state;
+  const next = consumeMove(state, from, to);
+  if (!next) return state;
+  return settleAfterMoves(next);
+}
+
+// Apply a sequence of single-die moves atomically (a combined move that uses
+// more than one die to reach a far destination), settling the turn only once.
+// steps: [{ from, to }] where each step's `from` is the previous step's `to`.
+function handleMovePath(state, steps) {
+  if (state.phase !== 'moving') return state;
+  if (!Array.isArray(steps) || steps.length === 0) return state;
+  let cur = state;
+  for (const step of steps) {
+    const next = consumeMove(cur, step.from, step.to);
+    if (!next) return state;          // illegal path — reject the whole thing
+    cur = next;
+    if (cur.phase === 'gameover') return cur;
+  }
+  return settleAfterMoves(cur);
 }
 
 function handleEndTurn(state) {
   // Guard: only end the turn if we're still in the moving phase
   if (state.phase !== 'moving') return state;
   return endTurn(state);
+}
+
+function handleUndo(state) {
+  if (state.phase !== 'moving') return state;
+  if (state.currentPlayer !== 'ashton') return state;
+  if (!state.usedDice.length) return state;
+  if (!state.turnStartSnapshot) return state;
+  return state.turnStartSnapshot;
 }
 
 function endTurn(state) {
@@ -341,19 +434,70 @@ function endTurn(state) {
     usedDice: [],
     phase: 'rolling',
     selectedPoint: null,
+    turnStartSnapshot: null,
+    dieMoves: {},
   };
   return next;
 }
 
-// Legal destination points from a selected source (for highlighting)
-export function legalDestinations(state, fromPoint) {
-  const avail = availableDice(state);
-  const uniqueDice = [...new Set(avail)];
-  const dests = new Set();
-  for (const die of uniqueDice) {
-    for (const m of legalMovesForDie(state, fromPoint, die)) {
-      dests.add(m.to);
+// Minimal board update used by the combined-move search (no events/win logic).
+function applyMoveToBoard(state, from, to) {
+  const points = state.points.map(p => ({ ...p }));
+  const bar = { ...state.bar };
+  const borneOff = { ...state.borneOff };
+  const player = state.currentPlayer;
+  const opp = opponent(player);
+
+  if (from === 'bar') {
+    bar[player]--;
+  } else {
+    points[from] = { ...points[from], count: points[from].count - 1 };
+    if (points[from].count === 0) points[from] = { count: 0, player: null };
+  }
+  if (to === 'off') {
+    borneOff[player]++;
+  } else {
+    if (points[to].player === opp && points[to].count === 1) {
+      bar[opp]++;
+      points[to] = { count: 0, player: null };
+    }
+    points[to] = { count: points[to].count + 1, player };
+  }
+  return { ...state, points, bar, borneOff };
+}
+
+// All destinations a checker at `fromPoint` can reach this turn, INCLUDING
+// combined moves that use more than one die. Returns a Map:
+//   endpoint (point index | 'off') → ordered steps [{ from, to, die }]
+// (the shortest path found). This is what makes moving the full pip count in a
+// single tap work, instead of forcing the player to move one die at a time.
+export function reachableTargets(state, fromPoint) {
+  const result = new Map();
+  // Available dice as { value, idx } so each physical die is used at most once
+  const avail = [];
+  state.dice.forEach((value, idx) => { if (!state.usedDice.includes(idx)) avail.push({ value, idx }); });
+
+  function search(curState, curFrom, usedIdx, path) {
+    for (const { value, idx } of avail) {
+      if (usedIdx.has(idx)) continue;
+      for (const m of legalMovesForDie(curState, curFrom, value)) {
+        const newPath = [...path, { from: curFrom, to: m.to, die: value }];
+        const existing = result.get(m.to);
+        if (!existing || newPath.length < existing.length) result.set(m.to, newPath);
+        // Continue chaining from a landed point (can't chain off the board)
+        if (typeof m.to === 'number') {
+          const nextState = applyMoveToBoard(curState, curFrom, m.to);
+          search(nextState, m.to, new Set([...usedIdx, idx]), newPath);
+        }
+      }
     }
   }
-  return [...dests];
+  search(state, fromPoint, new Set(), []);
+  return result;
+}
+
+// Legal destination points from a selected source (for highlighting). Includes
+// combined-move endpoints.
+export function legalDestinations(state, fromPoint) {
+  return [...reachableTargets(state, fromPoint).keys()];
 }

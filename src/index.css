@@ -36,3 +36,21 @@ img {
   0%, 100% { opacity: 0.6; transform: translate(-50%, -50%) scale(0.9); }
   50% { opacity: 1; transform: translate(-50%, -50%) scale(1.05); }
 }
+
+/* Warm glow ring on pieces that can legally move (pre-selection) */
+@keyframes moveableGlow {
+  0%, 100% { box-shadow: 0 0 0 2px rgba(210,165,50,0.3),  0 1px 8px rgba(210,165,50,0.25); }
+  50%       { box-shadow: 0 0 0 3px rgba(210,165,50,0.55), 0 3px 14px rgba(210,165,50,0.45); }
+}
+
+/* Brief flash on a point where Charlie just moved */
+@keyframes pieceFlash {
+  0%   { box-shadow: 0 0 0 4px rgba(200,120,60,0.85), 0 0 22px rgba(200,120,60,0.6); }
+  100% { box-shadow: 0 0 0 2.5px rgba(190,110,55,0.6), 0 1px 10px rgba(190,110,55,0.4); }
+}
+
+/* Persistent warm halo on pieces Charlie moved this turn — stays until Ashton rolls */
+@keyframes charlieTrailGlow {
+  0%, 100% { box-shadow: 0 0 0 2px rgba(190,110,55,0.45), 0 1px 10px rgba(190,110,55,0.3); }
+  50%       { box-shadow: 0 0 0 3px rgba(190,110,55,0.7),  0 2px 14px rgba(190,110,55,0.5); }
+}

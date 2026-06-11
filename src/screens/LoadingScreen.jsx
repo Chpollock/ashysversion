@@ -1,6 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import houseImg from '../assets/loading-house.png';
-import musicFile from '../assets/theme-music.mp3';
 
 export default function LoadingScreen({ onEnter, audioRef }) {
   const [visible, setVisible] = useState(false);
