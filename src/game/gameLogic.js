@@ -392,14 +392,28 @@ function handleOpeningRoll(state, action) {
   if (state.phase !== 'opening') return state;
   const { ashtonDie, charlieDie } = action;
   if (!ashtonDie || !charlieDie || ashtonDie === charlieDie) return state;
-  return {
+
+  // Real backgammon: the winner of the opening roll plays BOTH dice as their
+  // first turn — no re-roll. Straight into the moving phase.
+  const winner = ashtonDie > charlieDie ? 'ashton' : 'charlie';
+  const next = {
     ...state,
-    currentPlayer: ashtonDie > charlieDie ? 'ashton' : 'charlie',
-    dice: [ashtonDie, charlieDie], // rest visibly until the first real roll
-    diceOwner: 'opening',
+    currentPlayer: winner,
+    dice: [ashtonDie, charlieDie],
+    usedDice: [],
+    diceOwner: winner,
     rollId: state.rollId + 1,
-    phase: 'rolling',
+    phase: 'moving',
+    selectedPoint: null,
+    dieMoves: {},
   };
+
+  // Undo snapshot for Ashton, same as a normal roll
+  if (winner === 'ashton') {
+    const snapshot = { ...next, turnStartSnapshot: null };
+    return { ...next, turnStartSnapshot: snapshot };
+  }
+  return next;
 }
 
 function handleRollDice(state, action) {
@@ -624,12 +638,12 @@ function endTurn(state) {
     turnCount: state.turnCount + 1,
     currentPlayer: opponent(state.currentPlayer),
     // Keep the dice on the table (all marked used) until the next roll
-    // replaces them — they only "disappear" by being rolled over.
+    // replaces them — they only "disappear" by being rolled over. dieMoves
+    // stays too, so hovering a die still reveals what it moved.
     usedDice: state.dice.map((_, i) => i),
     phase: 'rolling',
     selectedPoint: null,
     turnStartSnapshot: null,
-    dieMoves: {},
   };
 }
 

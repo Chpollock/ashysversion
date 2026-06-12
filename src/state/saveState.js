@@ -4,7 +4,9 @@ const STORAGE_KEY = 'ashys-version-save';
 // recursing into nested objects, so adding fields here never breaks an old save.
 export function getDefaultState() {
   return {
-    pennies: 0,
+    // Enough found-in-the-box Pennies to start the very first project
+    // (Draw the Board, 5) — the game itself is behind that board.
+    pennies: 5,
     stats: {
       gamesPlayed: 0,
       gamesWon: 0,
@@ -14,6 +16,7 @@ export function getDefaultState() {
       lastPlayedDate: null,   // 'YYYY-MM-DD' local date string
       gamesPlayedToday: 0,
       winsByTier: {},         // { sleepy: n, classic: n, sharp: n }
+      gamesByTier: {},        // completed games per tier (for the record book)
     },
     firstWinOfDayDone: false,  // resets each new day
     music: {
@@ -53,7 +56,7 @@ export function getDefaultState() {
     // celebrated = tier/style ids whose "unlocked!" card has already been shown.
     // Starts on the gentlest Charlie.
     opponents: { tier: 'sleepy', style: 'balanced', celebrated: [] },
-    version: 5,
+    version: 6,
   };
 }
 
@@ -93,6 +96,11 @@ export function loadState() {
         ...merged.achievements,
         unlocked: Object.fromEntries(saved.achievements.unlocked.map(id => [id, at])),
       };
+    }
+    // v6: the game is gated behind the first project (Draw the Board, 5
+    // Pennies) — make sure nobody is stranded at the start without the fare.
+    if ((saved.version ?? 0) < 6 && merged.roomStateIndex === 0 && merged.pennies < 5) {
+      merged.pennies = 5;
     }
     merged.version = getDefaultState().version; // always reflect current schema
     return merged;

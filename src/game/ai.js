@@ -72,8 +72,9 @@ function pickSmart(state, moves, styleWeights) {
     }
   }
 
-  // Add small randomness so Charlie isn't perfectly predictable
-  const threshold = bestScore - 2;
+  // Small randomness so Charlie isn't perfectly predictable; the Wild
+  // playstyle's `chaos` widens how far from "best" he'll happily stray.
+  const threshold = bestScore - 2 - (styleWeights.chaos ?? 0);
   const goodMoves = moves.filter(m => scoreMoveClassic(state, m, styleWeights) >= threshold);
   return pickRandom(goodMoves) ?? best;
 }
@@ -103,7 +104,7 @@ function scoreMoveClassic(state, move, sw) {
   // Landing alone on an empty point: score by forward progress, minus a little
   // caution for the blot it leaves (styles tune how much Charlie cares).
   // Charlie's home is 18–23; higher index = more advanced.
-  let score = move.to * CLASSIC_WEIGHTS.advance;
+  let score = move.to * CLASSIC_WEIGHTS.advance * (sw.advance ?? 1);
   score -= CLASSIC_WEIGHTS.blotPenalty * (sw.blotPenalty ?? 1) * (move.to < 18 ? 1 : 0.4);
   if (typeof move.from === 'number' && points[move.from].count === 2) {
     // Leaving a blot behind, too
@@ -137,9 +138,10 @@ function sharpMoves(state, sw) {
     return { seq, score: evaluateBoard(cur, sw) };
   });
 
-  // Small randomness among near-best sequences so he stays human (and beatable)
+  // Small randomness among near-best sequences so he stays human (and
+  // beatable); Wild's `chaos` widens the pool considerably.
   const best = Math.max(...scored.map(s => s.score));
-  const good = scored.filter(s => s.score >= best - 3);
+  const good = scored.filter(s => s.score >= best - 3 - (sw.chaos ?? 0));
   return good[Math.floor(Math.random() * good.length)].seq;
 }
 
@@ -150,8 +152,8 @@ function evaluateBoard(state, sw) {
 
   if (state.winner === 'charlie') return Infinity;
 
-  // Race: how far ahead Charlie is in pips
-  score += (pipCount(state, 'ashton') - pipCount(state, 'charlie')) * SHARP_WEIGHTS.pip;
+  // Race: how far ahead Charlie is in pips (Racer leans into this)
+  score += (pipCount(state, 'ashton') - pipCount(state, 'charlie')) * SHARP_WEIGHTS.pip * (sw.pip ?? 1);
 
   // Checkers off and Ashton stuck on the bar
   score += borneOff.charlie * SHARP_WEIGHTS.off;

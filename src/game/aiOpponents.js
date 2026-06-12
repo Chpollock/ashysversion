@@ -22,6 +22,8 @@ export const AI_TIERS = [
   },
 ];
 
+// Playstyles — how Charlie plays, at any difficulty. Weights multiply the AI's
+// base scoring; `chaos` widens how far from "best" he's willing to stray.
 export const AI_STYLES = [
   {
     id: 'balanced', name: 'Balanced', emoji: '⚖️',
@@ -31,12 +33,22 @@ export const AI_STYLES = [
   {
     id: 'feisty', name: 'Feisty', emoji: '🔥',
     unlockWins: 3, weights: { hit: 1.5, blotPenalty: 0.6 },
-    description: 'Lives to send you to the bar.',
+    description: 'Aggressive — lives to send you to the bar.',
   },
   {
     id: 'careful', name: 'Careful', emoji: '🧱',
     unlockWins: 5, weights: { blotPenalty: 1.6, point: 1.4, hit: 0.8 },
-    description: 'Builds little walls and hides behind them.',
+    description: 'Safe — builds little walls and hides behind them.',
+  },
+  {
+    id: 'wild', name: 'Wild', emoji: '🤪',
+    unlockWins: 7, weights: { chaos: 30, blotPenalty: 0.5 },
+    description: 'Unpredictable — no plan, all vibes.',
+  },
+  {
+    id: 'racer', name: 'Racer', emoji: '🏃',
+    unlockWins: 10, weights: { advance: 1.7, pip: 1.4, hit: 0.7, point: 0.8 },
+    description: 'Eyes on home, full speed, no stopping.',
   },
 ];
 

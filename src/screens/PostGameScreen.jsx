@@ -3,7 +3,7 @@
 
 export default function PostGameScreen({ summary, onPlayAgain, onBackToRoom }) {
   if (!summary) return null;
-  const { result, payout, snippet, newAchievements, isFirstWinOfDay, tier, newOpponents = [], bonuses = [] } = summary;
+  const { result, payout, snippet, newAchievements, isFirstWinOfDay, tier, newOpponents = [], bonuses = [], nextUnlock = null } = summary;
   const won = result === 'win';
 
   return (
@@ -132,6 +132,13 @@ export default function PostGameScreen({ summary, onPlayAgain, onBackToRoom }) {
                 )}
               </div>
             ))}
+          </div>
+        )}
+
+        {/* What winning works toward */}
+        {nextUnlock && newOpponents.length === 0 && (
+          <div style={{ marginTop: 14, fontSize: 11.5, color: '#a07a40', fontStyle: 'italic' }}>
+            🔓 {nextUnlock.winsToGo} more win{nextUnlock.winsToGo === 1 ? '' : 's'} until {nextUnlock.emoji} {nextUnlock.name}
           </div>
         )}
 

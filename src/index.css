@@ -9,6 +9,13 @@ html, body {
   overflow-x: hidden;
   -webkit-text-size-adjust: 100%;
   background: #f0dea8;
+  /* No rubber-band bounce in standalone mode */
+  overscroll-behavior: none;
+}
+
+body {
+  /* Panning is fine; pinch-zoom never is (gestures stay on the game) */
+  touch-action: pan-x pan-y;
 }
 
 #root {
@@ -53,6 +60,11 @@ img {
 @keyframes charlieTrailGlow {
   0%, 100% { box-shadow: 0 0 0 2px rgba(190,110,55,0.45), 0 1px 10px rgba(190,110,55,0.3); }
   50%       { box-shadow: 0 0 0 3px rgba(190,110,55,0.7),  0 2px 14px rgba(190,110,55,0.5); }
+}
+
+/* Marching dashes along the hover arrow (origin → destination of a move) */
+@keyframes arrowMarch {
+  to { stroke-dashoffset: -15; }
 }
 
 /* Small side-to-side shake on a checker that can't move right now */

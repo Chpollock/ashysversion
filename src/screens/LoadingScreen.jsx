@@ -1,5 +1,8 @@
 import { useEffect, useState } from 'react';
 import houseImg from '../assets/loading-house.png';
+// Bundled (offline-safe) title font
+import '@fontsource/playfair-display/700.css';
+import '@fontsource/playfair-display/700-italic.css';
 
 export default function LoadingScreen({ onEnter, audioRef }) {
   const [visible, setVisible] = useState(false);
@@ -62,12 +65,13 @@ export default function LoadingScreen({ onEnter, audioRef }) {
         <h1
           style={{
             margin: 0,
-            fontFamily: 'Georgia, "Times New Roman", serif',
-            fontSize: 'clamp(32px, 9vw, 52px)',
-            fontWeight: 'normal',
+            fontFamily: '"Playfair Display", Georgia, "Times New Roman", serif',
+            fontStyle: 'italic',
+            fontSize: 'clamp(36px, 10vw, 58px)',
+            fontWeight: 700,
             color: '#fff8e7',
             textShadow: '0 2px 24px rgba(80,40,0,0.5), 0 1px 4px rgba(0,0,0,0.3)',
-            letterSpacing: 2,
+            letterSpacing: 1,
             lineHeight: 1.2,
           }}
         >
@@ -121,7 +125,7 @@ export default function LoadingScreen({ onEnter, audioRef }) {
             letterSpacing: 0.5,
           }}
         >
-          Designed by Player 2. Because she's Player 1.
+          Player 2 Games. Designed For Player 1.
         </p>
       </div>
 

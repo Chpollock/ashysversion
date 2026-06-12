@@ -32,7 +32,8 @@ export default function ShopScreen({ save, updateSave, onBack }) {
       background: 'linear-gradient(160deg, #f3e3bf 0%, #e9d49e 100%)',
       fontFamily: 'Georgia, serif',
       display: 'flex', flexDirection: 'column',
-      padding: '14px 12px 28px', boxSizing: 'border-box',
+      padding: 'calc(14px + env(safe-area-inset-top)) 12px calc(28px + env(safe-area-inset-bottom))',
+      boxSizing: 'border-box',
     }}>
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>

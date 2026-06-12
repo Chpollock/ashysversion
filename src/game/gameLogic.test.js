@@ -189,17 +189,23 @@ describe('regression: bar entry when only the smaller die can play at all', () =
 });
 
 describe('opening roll', () => {
-  it('higher die goes first and play moves to the rolling phase', () => {
+  it('the winner plays BOTH opening dice as their first turn', () => {
     const fresh = createInitialState();
     expect(fresh.phase).toBe('opening');
 
-    const charlieStarts = gameReducer(fresh, { type: 'OPENING_ROLL', ashtonDie: 2, charlieDie: 5 });
-    expect(charlieStarts.currentPlayer).toBe('charlie');
-    expect(charlieStarts.phase).toBe('rolling');
+    const charlieWins = gameReducer(fresh, { type: 'OPENING_ROLL', ashtonDie: 2, charlieDie: 5 });
+    expect(charlieWins.currentPlayer).toBe('charlie');
+    expect(charlieWins.phase).toBe('moving');           // straight into the turn
+    expect(charlieWins.dice).toEqual([2, 5]);           // …with the opening dice
+    expect(charlieWins.usedDice).toEqual([]);
+    expect(charlieWins.diceOwner).toBe('charlie');
 
-    const ashtonStarts = gameReducer(fresh, { type: 'OPENING_ROLL', ashtonDie: 6, charlieDie: 1 });
-    expect(ashtonStarts.currentPlayer).toBe('ashton');
-    expect(ashtonStarts.phase).toBe('rolling');
+    const ashtonWins = gameReducer(fresh, { type: 'OPENING_ROLL', ashtonDie: 6, charlieDie: 1 });
+    expect(ashtonWins.currentPlayer).toBe('ashton');
+    expect(ashtonWins.phase).toBe('moving');
+    expect(ashtonWins.dice).toEqual([6, 1]);
+    expect(ashtonWins.turnStartSnapshot).toBeTruthy();  // undo works on turn one
+    expect(allLegalMoves(ashtonWins).length).toBeGreaterThan(0);
   });
 
   it('rejects ties and rolls outside the opening phase', () => {

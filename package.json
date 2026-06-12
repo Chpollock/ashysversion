@@ -9,9 +9,11 @@
     "lint": "eslint .",
     "test": "vitest run",
     "preview": "vite preview",
-    "extract-pieces": "node scripts/extractPieces.js"
+    "extract-pieces": "node scripts/extractPieces.js",
+    "make-icons": "node scripts/makeIcons.js"
   },
   "dependencies": {
+    "@fontsource/playfair-display": "^5.2.8",
     "react": "^19.2.6",
     "react-dom": "^19.2.6"
   },

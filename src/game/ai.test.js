@@ -36,7 +36,7 @@ describe('getAIMoves', () => {
 
   it('every style produces a legal turn at every tier', () => {
     for (const tier of ['sleepy', 'classic', 'sharp']) {
-      for (const style of ['balanced', 'feisty', 'careful']) {
+      for (const style of ['balanced', 'feisty', 'careful', 'wild', 'racer']) {
         const state = charlieState([4, 2]);
         const moves = getAIMoves(state, { tier, style });
         replay(state, moves);

@@ -8,13 +8,15 @@ import { getAIMoves } from '../game/ai.js';
 import { AI_TIERS, AI_STYLES, TIER_BY_ID, STYLE_BY_ID } from '../game/aiOpponents.js';
 import { computePayout, isMeaningfulAbandon, ECONOMY } from '../game/economy.js';
 import { computeGameBonuses } from '../game/gameBonuses.js';
+import { loadGame, saveGame, clearGame } from '../state/gameSession.js';
 import { pickSnippet, EV } from '../game/events.js';
 import { evaluateAchievements } from '../game/achievements.js';
 import { pickCharlieLine } from '../game/charlieSpeech.js';
 
 const AI_ROLL_MS  = 900;   // pause before Charlie picks up the dice
 const AI_THINK_MS = 1700;  // pause after the roll while he "thinks" about his moves
-const AI_MOVE_MS  = 1250;  // gap between each of Charlie's moves — slow enough to follow
+const AI_LIFT_MS  = 700;   // how long a piece "lifts" at its source before it moves
+const AI_MOVE_MS  = 1450;  // gap between move STARTS (lift + travel + a beat of rest)
 
 // ─── Move description for Charlie's toast ─────────────────────────────────────
 function describeMoveForToast(move, stateBefore) {
@@ -119,7 +121,11 @@ const debugBtn = {
 
 // ─── Main screen ──────────────────────────────────────────────────────────────
 export default function GameScreen({ save, updateSave, muted, onToggleMute, onBackToRoom }) {
-  const [gameState, dispatch] = useReducer(gameReducer, null, createInitialState);
+  // Resume the in-progress game if one is saved; otherwise start fresh
+  const [gameState, dispatch] = useReducer(gameReducer, null, () => loadGame() ?? createInitialState());
+
+  // Abandon confirmation card
+  const [abandonOpen, setAbandonOpen] = useState(false);
 
   // Post-game summary (null until a game settles)
   const [summary, setSummary] = useState(null);
@@ -137,6 +143,10 @@ export default function GameScreen({ save, updateSave, muted, onToggleMute, onBa
   const [flashPoint, setFlashPoint] = useState(null);
   const flashTimerRef = useRef(null);
 
+  // The piece Charlie is about to move — lifts at its source first so the
+  // move is easy to follow ('bar' | point index | null)
+  const [liftPoint, setLiftPoint] = useState(null);
+
   // Persistent trail: every point Charlie moved a piece TO this turn.
   const [charlieTrail, setCharlieTrail] = useState([]);
 
@@ -152,8 +162,12 @@ export default function GameScreen({ save, updateSave, muted, onToggleMute, onBa
   const speechCooldownRef = useRef(0);
   const seenEventsRef = useRef(0);
 
-  // One-shot richer banner for the opening roll result
-  const openingBannerRef = useRef(null);
+  // Opening-roll ceremony: one die per side, then the loser's die slides over
+  // to the winner — both dice are theirs for the first turn.
+  // { ashtonDie, charlieDie, winner, sliding, key } | null
+  const [openingMerge, setOpeningMerge] = useState(null);
+  const mergeEndRef = useRef(0);
+  const mergeTimersRef = useRef([]);
 
   // Delayed reveal of the post-game summary
   const summaryTimerRef = useRef(null);
@@ -162,6 +176,13 @@ export default function GameScreen({ save, updateSave, muted, onToggleMute, onBa
   const gameStateRef = useRef(gameState);
   useEffect(() => { gameStateRef.current = gameState; }, [gameState]);
 
+  // Persist the game continuously — leaving the room, the page, or the app
+  // never loses it. Only finishing (or explicitly abandoning) clears it.
+  useEffect(() => {
+    if (gameState.phase === 'gameover') clearGame();
+    else saveGame(gameState);
+  }, [gameState]);
+
   // Cleanup all timers on unmount
   useEffect(() => () => {
     clearTimeout(bannerTimerRef.current);
@@ -169,6 +190,7 @@ export default function GameScreen({ save, updateSave, muted, onToggleMute, onBa
     clearTimeout(flashTimerRef.current);
     clearTimeout(summaryTimerRef.current);
     clearTimeout(speechTimerRef.current);
+    mergeTimersRef.current.forEach(clearTimeout);
   }, []);
 
   // ── Charlie's table talk ──────────────────────────────────────────────────
@@ -210,29 +232,28 @@ export default function GameScreen({ save, updateSave, muted, onToggleMute, onBa
   // ── Turn announcement banner ──────────────────────────────────────────────
   useEffect(() => {
     if (gameState.phase !== 'rolling') return;
-    clearTimeout(bannerTimerRef.current);
-
-    // The opening roll sets a one-shot richer message ("You rolled 5, Charlie 3…")
-    const opening = openingBannerRef.current;
-    openingBannerRef.current = null;
-
-    const next = opening ?? (gameState.currentPlayer === 'ashton'
+    const next = gameState.currentPlayer === 'ashton'
       ? { message: 'Your turn!', variant: 'ashton' }
-      : { message: "Charlie's turn", variant: 'charlie' });
-    setBanner(next);
-
-    bannerTimerRef.current = setTimeout(() => setBanner(null), opening ? 2600 : 1800);
+      : { message: "Charlie's turn", variant: 'charlie' };
+    const t = setTimeout(() => {
+      clearTimeout(bannerTimerRef.current);
+      setBanner(next);
+      bannerTimerRef.current = setTimeout(() => setBanner(null), 1800);
+    }, 30);
+    return () => clearTimeout(t);
   }, [gameState.currentPlayer, gameState.phase]);
 
   // ── "Charlie's thinking…" only once he's actually rolled ─────────────────────
-  // Slightly delayed so it appears while the dice settle and he ponders.
+  // Slightly delayed so it appears while the dice settle and he ponders (and
+  // never on top of the opening-roll ceremony message).
   useEffect(() => {
     if (gameState.phase !== 'moving' || gameState.currentPlayer !== 'charlie') return;
+    const wait = Math.max(700, mergeEndRef.current - Date.now() + 900);
     const t = setTimeout(() => {
       clearTimeout(bannerTimerRef.current);
       setBanner({ message: "Charlie's thinking…", variant: 'charlie' });
       bannerTimerRef.current = setTimeout(() => setBanner(null), 1600);
-    }, 700);
+    }, wait);
     return () => clearTimeout(t);
   }, [gameState.currentPlayer, gameState.phase]);
 
@@ -279,6 +300,10 @@ export default function GameScreen({ save, updateSave, muted, onToggleMute, onBa
       winsByTier: won
         ? { ...save.stats.winsByTier, [tier.id]: (save.stats.winsByTier?.[tier.id] ?? 0) + 1 }
         : save.stats.winsByTier ?? {},
+      gamesByTier: {
+        ...(save.stats.gamesByTier ?? {}),
+        [tier.id]: ((save.stats.gamesByTier ?? {})[tier.id] ?? 0) + 1,
+      },
     };
 
     // New rivals/styles unlocked by crossing a win threshold this game
@@ -289,6 +314,11 @@ export default function GameScreen({ save, updateSave, muted, onToggleMute, onBa
       && save.stats.gamesWon < o.unlockWins
       && !celebrated.includes(o.id)
     );
+
+    // …and the next one still locked, so she knows what winning works toward
+    const nextUnlock = [...AI_TIERS, ...AI_STYLES]
+      .filter(o => o.unlockWins > statsAfter.gamesWon)
+      .sort((a, b) => a.unlockWins - b.unlockWins)[0] ?? null;
 
     const ctx = {
       result,
@@ -324,7 +354,13 @@ export default function GameScreen({ save, updateSave, muted, onToggleMute, onBa
     const snippet = pickSnippet(gameState.eventLog, result);
     clearTimeout(summaryTimerRef.current);
     summaryTimerRef.current = setTimeout(() => {
-      setSummary({ result, payout, bonuses, snippet, newAchievements: newly, isFirstWinOfDay, tier, newOpponents });
+      setSummary({
+        result, payout, bonuses, snippet, newAchievements: newly, isFirstWinOfDay, tier, newOpponents,
+        nextUnlock: nextUnlock && {
+          name: nextUnlock.name, emoji: nextUnlock.emoji,
+          winsToGo: nextUnlock.unlockWins - statsAfter.gamesWon,
+        },
+      });
     }, 500);
   }, [gameState.phase]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -344,14 +380,15 @@ export default function GameScreen({ save, updateSave, muted, onToggleMute, onBa
       return () => timers.forEach(clearTimeout);
     }
 
-    // moving
+    // moving — if Charlie won the opening, wait out the dice-merge ceremony
+    const thinkMs = Math.max(AI_THINK_MS, mergeEndRef.current - Date.now() + 600);
     const moves = getAIMoves(gameState, {
       tier: save.opponents?.tier ?? 'sleepy',
       style: save.opponents?.style ?? 'balanced',
     });
     if (!moves.length) {
       maybeSay('charlie-stuck', 0.7);
-      schedule(() => dispatch({ type: 'END_TURN' }), AI_THINK_MS);
+      schedule(() => dispatch({ type: 'END_TURN' }), thinkMs);
       return () => timers.forEach(clearTimeout);
     }
 
@@ -359,7 +396,15 @@ export default function GameScreen({ save, updateSave, muted, onToggleMute, onBa
     setCharlieTrail([]); // fresh trail for this turn
 
     moves.forEach((move, i) => {
+      const start = thinkMs + i * AI_MOVE_MS;
+
+      // First the piece lifts at its source, so her eye finds it…
+      schedule(() => setLiftPoint(move.from), start);
+
+      // …then it travels.
       schedule(() => {
+        setLiftPoint(null);
+
         const toast = describeMoveForToast(move, gameStateRef.current);
         clearTimeout(toastTimerRef.current);
         setMoveToast(toast);
@@ -379,57 +424,82 @@ export default function GameScreen({ save, updateSave, muted, onToggleMute, onBa
         });
 
         dispatch({ type: 'MOVE_PIECE', from: move.from, to: move.to });
-      }, AI_THINK_MS + i * AI_MOVE_MS);
+      }, start + AI_LIFT_MS);
     });
 
     // Safety: end the turn if the last move didn't already (no-op if it did)
-    schedule(() => dispatch({ type: 'END_TURN' }), AI_THINK_MS + moves.length * AI_MOVE_MS + 200);
+    schedule(() => dispatch({ type: 'END_TURN' }), thinkMs + (moves.length - 1) * AI_MOVE_MS + AI_LIFT_MS + 700);
 
-    return () => timers.forEach(clearTimeout);
+    return () => { timers.forEach(clearTimeout); setLiftPoint(null); };
   }, [gameState.currentPlayer, gameState.phase, gameState.dice.join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleNewGame() {
     clearTimeout(summaryTimerRef.current);
+    mergeTimersRef.current.forEach(clearTimeout);
+    mergeEndRef.current = 0;
     settledRef.current = false;
-    openingBannerRef.current = null;
+    setOpeningMerge(null);
     setSummary(null);
     setBanner(null);
     setMoveToast(null);
     setFlashPoint(null);
+    setLiftPoint(null);
     setCharlieTrail([]);
     dispatch({ type: 'NEW_GAME' });
   }
 
   function handleBackToRoom() {
-    // Leaving mid-game: a small consolation if real progress was made (and the
-    // streak ends), nothing if she only peeked. Finished games settle normally.
-    if (gameState.phase !== 'gameover' && gameState.phase !== 'opening' && gameState.rollId > 0) {
-      const meaningful = isMeaningfulAbandon(gameState);
-      const amount = meaningful ? ECONOMY.ABANDONED_PROGRESS : ECONOMY.ABANDONED_EARLY;
-      if (meaningful) {
-        updateSave(s => ({
-          ...s,
-          pennies: s.pennies + amount,
-          stats: {
-            ...s.stats,
-            totalPenniesEarned: s.stats.totalPenniesEarned + amount,
-            currentWinStreak: 0,
-          },
-        }));
-      }
-    }
+    // Leaving never abandons — the game is saved and resumes from the room.
     onBackToRoom();
   }
 
-  // Opening roll: each side rolls one die, higher goes first (ties rerolled)
+  // Explicit, opted-into abandonment (from the confirm card). A small
+  // consolation if real progress was made — and the streak ends with it.
+  function handleAbandon() {
+    const meaningful = isMeaningfulAbandon(gameState);
+    const amount = meaningful ? ECONOMY.ABANDONED_PROGRESS : ECONOMY.ABANDONED_EARLY;
+    if (meaningful) {
+      updateSave(s => ({
+        ...s,
+        pennies: s.pennies + amount,
+        stats: {
+          ...s.stats,
+          totalPenniesEarned: s.stats.totalPenniesEarned + amount,
+          currentWinStreak: 0,
+        },
+      }));
+    }
+    clearGame();
+    setAbandonOpen(false);
+    onBackToRoom();
+  }
+
+  // Opening roll: each side rolls one die (ties rerolled). The winner keeps
+  // BOTH dice and plays them as the first turn — the loser's die visibly
+  // slides over to the winner's side.
   function handleOpeningRoll() {
     setPickerOpen(false);
     const { ashtonDie, charlieDie } = rollOpeningValues();
-    const youStart = ashtonDie > charlieDie;
-    openingBannerRef.current = youStart
-      ? { message: `You rolled ${ashtonDie}, Charlie ${charlieDie} — you're up!`, variant: 'ashton' }
-      : { message: `You rolled ${ashtonDie}, Charlie ${charlieDie} — Charlie starts`, variant: 'charlie' };
+    const youWin = ashtonDie > charlieDie;
+    const winner = youWin ? 'ashton' : 'charlie';
+
+    setOpeningMerge({ ashtonDie, charlieDie, winner, sliding: false, key: Date.now() });
+    mergeEndRef.current = Date.now() + 2300;
+    mergeTimersRef.current.push(
+      setTimeout(() => setOpeningMerge(m => m && { ...m, sliding: true }), 1100),
+      setTimeout(() => setOpeningMerge(null), 2300),
+    );
+
     dispatch({ type: 'OPENING_ROLL', ashtonDie, charlieDie });
+
+    clearTimeout(bannerTimerRef.current);
+    setBanner({
+      message: youWin
+        ? `You rolled ${ashtonDie}, Charlie ${charlieDie} — both dice are yours!`
+        : `You rolled ${ashtonDie}, Charlie ${charlieDie} — Charlie takes both`,
+      variant: winner,
+    });
+    bannerTimerRef.current = setTimeout(() => setBanner(null), 3100);
   }
 
   // Ashton tapped a checker that can't move — explain why, gently.
@@ -445,9 +515,19 @@ export default function GameScreen({ save, updateSave, muted, onToggleMute, onBa
     toastTimerRef.current = setTimeout(() => setMoveToast(null), 2000);
   }
 
-  // Point to highlight when hovering a used die (the destination it moved to)
+  // The move a hovered die made: destination highlight + an arrow tracing it
+  // back to where the piece came from. `mover` resolves bar/off positions.
   const hoverMove = hoverDie != null ? gameState.dieMoves[hoverDie] : null;
   const hoverPoint = hoverMove && typeof hoverMove.to === 'number' ? hoverMove.to : null;
+  const hoverArrow = hoverMove ? { ...hoverMove, mover: gameState.diceOwner ?? 'charlie' } : null;
+
+  // Hovering a piece Charlie moved (his trail) reveals that piece's move
+  function handleTrailHover(pt) {
+    if (pt === null) return setHoverDie(null);
+    const entries = Object.entries(gameState.dieMoves).filter(([, m]) => m.to === pt);
+    if (!entries.length) return;
+    setHoverDie(Number(entries[entries.length - 1][0]));
+  }
 
   const isAshtonTurn = gameState.currentPlayer === 'ashton';
   const showUndo = gameState.phase === 'moving'
@@ -478,7 +558,9 @@ export default function GameScreen({ save, updateSave, muted, onToggleMute, onBa
       minHeight: '100dvh',
       background: 'linear-gradient(160deg, #f5e8c8 0%, #eedcaa 50%, #e5cc90 100%)',
       display: 'flex', flexDirection: 'column', alignItems: 'center',
-      padding: '12px 8px 24px', boxSizing: 'border-box', fontFamily: 'Georgia, serif',
+      // Safe areas keep the header off the notch and controls off the home bar
+      padding: 'calc(12px + env(safe-area-inset-top)) 8px calc(24px + env(safe-area-inset-bottom))',
+      boxSizing: 'border-box', fontFamily: 'Georgia, serif',
     }}>
       {/* Header */}
       <div style={{
@@ -486,17 +568,33 @@ export default function GameScreen({ save, updateSave, muted, onToggleMute, onBa
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         marginBottom: 8, padding: '0 4px',
       }}>
-        <button onPointerDown={handleBackToRoom} style={{
-          background: 'rgba(255,250,235,0.5)', border: '1px solid rgba(150,110,60,0.3)',
-          borderRadius: 12, padding: '4px 10px', color: '#7a5430',
-          fontFamily: 'Georgia, serif', fontSize: 12, cursor: 'pointer',
-          WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation',
-        }} aria-label="Back to room">‹ Room</button>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button onPointerDown={handleBackToRoom} style={{
+            background: 'rgba(255,250,235,0.5)', border: '1px solid rgba(150,110,60,0.3)',
+            borderRadius: 12, padding: '4px 10px', color: '#7a5430',
+            fontFamily: 'Georgia, serif', fontSize: 12, cursor: 'pointer',
+            WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation',
+            minWidth: 44, minHeight: 44, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+          }} aria-label="Back to room (game saved)">‹ Room</button>
+          {gameState.rollId > 0 && gameState.phase !== 'gameover' && (
+            <button onPointerDown={() => setAbandonOpen(true)} style={{
+              background: 'rgba(255,250,235,0.35)', border: '1px solid rgba(150,110,60,0.25)',
+              borderRadius: 12, padding: '4px 9px', color: '#9a7a50',
+              fontFamily: 'Georgia, serif', fontSize: 12, cursor: 'pointer',
+              WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation',
+              minWidth: 44, minHeight: 44, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+            }} aria-label="Abandon game">🏳️</button>
+          )}
+        </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <span style={{ fontSize: 13, color: '#8a6030' }}>🪙 {save.pennies}</span>
           <button
             onPointerDown={onToggleMute}
-            style={{ background: 'none', border: 'none', fontSize: 18, cursor: 'pointer', padding: 4, lineHeight: 1, WebkitTapHighlightColor: 'transparent' }}
+            style={{
+              background: 'none', border: 'none', fontSize: 18, cursor: 'pointer', padding: 4,
+              lineHeight: 1, WebkitTapHighlightColor: 'transparent',
+              minWidth: 44, minHeight: 44, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+            }}
             aria-label={muted ? 'Unmute' : 'Mute'}
           >
             {muted ? '🔇' : '🔉'}
@@ -530,7 +628,7 @@ export default function GameScreen({ save, updateSave, muted, onToggleMute, onBa
             }}
             aria-label="Choose opponent"
           >
-            vs {equippedTier.emoji} {equippedTier.name} · {equippedStyle.emoji} {equippedStyle.name} ▾
+            vs {equippedTier.emoji} {equippedTier.name} · playstyle: {equippedStyle.emoji} {equippedStyle.name} ▾
           </button>
         ) : (
           <span style={{
@@ -539,7 +637,7 @@ export default function GameScreen({ save, updateSave, muted, onToggleMute, onBa
           }}>
             {equippedTier.emoji} {equippedTier.name}
             {equippedStyle.id !== 'balanced' ? (
-              <span style={{ fontSize: 13, fontWeight: 'normal', color: '#8a6030' }}> · {equippedStyle.name}</span>
+              <span style={{ fontSize: 13, fontWeight: 'normal', color: '#8a6030' }}> · playstyle: {equippedStyle.name}</span>
             ) : null}
           </span>
         )}
@@ -571,24 +669,42 @@ export default function GameScreen({ save, updateSave, muted, onToggleMute, onBa
           boardId={save.boards.equipped}
           pieceSet={save.pieceSets.equipped}
           flashPoint={flashPoint}
+          liftPoint={liftPoint}
           charlieTrail={charlieTrail}
           hoverPoint={hoverPoint}
+          hoverMove={hoverArrow}
+          onTrailHover={handleTrailHover}
           onSelectPiece={(pt) => dispatch({ type: 'SELECT_PIECE', point: pt })}
           onMovePath={(steps) => dispatch({ type: 'MOVE_PATH', steps })}
           onBlockedTap={handleBlockedTap}
         />
 
-        {gameState.dice.length > 0 && gameState.diceOwner === 'opening' ? (
+        {openingMerge ? (
           <>
-            {/* Opening roll: one die per player, on their own half */}
-            <div style={{ position: 'absolute', left: '27%', top: '45%', transform: 'translate(-50%,-50%)', zIndex: 30, pointerEvents: 'none' }}>
-              <DiceFaces dice={[gameState.dice[1]]} usedDice={[]} phase={gameState.phase}
-                currentPlayer={gameState.currentPlayer} rollId={gameState.rollId} size={36} label="Charlie" />
-            </div>
-            <div style={{ position: 'absolute', left: '73%', top: '45%', transform: 'translate(-50%,-50%)', zIndex: 30, pointerEvents: 'none' }}>
-              <DiceFaces dice={[gameState.dice[0]]} usedDice={[]} phase={gameState.phase}
-                currentPlayer={gameState.currentPlayer} rollId={gameState.rollId} size={36} label="you" />
-            </div>
+            {/* Opening ceremony: one die per side, then the loser's die slides
+                over — the winner plays both as their first turn. Final spots
+                match where the normal dice row will render. */}
+            {(() => {
+              const winX = openingMerge.winner === 'ashton' ? 73 : 27;
+              const ashtonLeft = openingMerge.sliding ? winX - 5.5 : 73;
+              const charlieLeft = openingMerge.sliding ? winX + 5.5 : 27;
+              const common = {
+                position: 'absolute', top: '45%', transform: 'translate(-50%,-50%)',
+                zIndex: 30, pointerEvents: 'none', transition: 'left 0.85s ease-in-out',
+              };
+              return (
+                <>
+                  <div style={{ ...common, left: `${ashtonLeft}%` }}>
+                    <DiceFaces dice={[openingMerge.ashtonDie]} usedDice={[]} phase={gameState.phase}
+                      rollId={gameState.rollId} size={36} label={openingMerge.sliding ? null : 'Ashy'} />
+                  </div>
+                  <div style={{ ...common, left: `${charlieLeft}%` }}>
+                    <DiceFaces dice={[openingMerge.charlieDie]} usedDice={[]} phase={gameState.phase}
+                      rollId={gameState.rollId} size={36} label={openingMerge.sliding ? null : 'Charlie'} />
+                  </div>
+                </>
+              );
+            })()}
           </>
         ) : gameState.dice.length > 0 && (
           <div style={{
@@ -618,7 +734,7 @@ export default function GameScreen({ save, updateSave, muted, onToggleMute, onBa
         display: 'flex', justifyContent: 'space-between', alignItems: 'center',
         marginTop: 6, padding: '0 6px',
       }}>
-        <span style={{ fontSize: 13.5, color: '#6a4a28', fontStyle: 'italic', letterSpacing: 0.3 }}>you</span>
+        <span style={{ fontSize: 13.5, color: '#6a4a28', fontStyle: 'italic', letterSpacing: 0.3 }}>Ashy</span>
         <span style={pipPill}>{pipCount(gameState, 'ashton')} pips</span>
       </div>
 
@@ -726,6 +842,50 @@ export default function GameScreen({ save, updateSave, muted, onToggleMute, onBa
           }))}
           onClose={() => setPickerOpen(false)}
         />
+      )}
+
+      {/* Abandon confirmation */}
+      {abandonOpen && (
+        <div onPointerDown={() => setAbandonOpen(false)} style={{
+          position: 'fixed', inset: 0, zIndex: 55,
+          background: 'rgba(30,20,10,0.55)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24,
+        }}>
+          <div onPointerDown={e => e.stopPropagation()} style={{
+            background: 'linear-gradient(160deg,#fffdf2,#f3e6c4)',
+            borderRadius: 20, padding: '24px 26px', maxWidth: 300, width: '100%',
+            textAlign: 'center', border: '2px solid #d4aa60', boxShadow: '0 8px 36px rgba(0,0,0,0.4)',
+            fontFamily: 'Georgia, serif',
+          }}>
+            <div style={{ fontSize: 30, marginBottom: 6 }}>🏳️</div>
+            <h3 style={{ margin: '0 0 8px', fontWeight: 'normal', color: '#5a3a1a', fontSize: 19 }}>
+              Walk away from this one?
+            </h3>
+            <p style={{ margin: '0 0 16px', fontSize: 13, color: '#8a6f50', fontStyle: 'italic', lineHeight: 1.45 }}>
+              {isMeaningfulAbandon(gameState)
+                ? `The progress is worth +${ECONOMY.ABANDONED_PROGRESS} Pennies — but the streak ends here.`
+                : 'It barely started — no harm done, no Pennies either.'}
+            </p>
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
+              <button onPointerDown={handleAbandon} style={{
+                padding: '9px 18px', borderRadius: 14,
+                border: '1.5px solid rgba(120,80,40,0.4)', background: 'rgba(120,80,40,0.1)',
+                color: '#7a5430', fontFamily: 'Georgia, serif', fontSize: 13,
+                cursor: 'pointer', WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation',
+              }}>
+                Abandon
+              </button>
+              <button onPointerDown={() => setAbandonOpen(false)} style={{
+                padding: '9px 18px', borderRadius: 14,
+                border: '2px solid #b8843c', background: 'linear-gradient(135deg,#e8b45a,#c8862a)',
+                color: '#fff8e7', fontFamily: 'Georgia, serif', fontSize: 13, fontWeight: 'bold',
+                cursor: 'pointer', WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation',
+              }}>
+                Keep playing
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Post-game */}

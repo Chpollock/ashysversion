@@ -30,8 +30,11 @@ export default function OpponentPicker({ gamesWon, tier, style, onPick, onClose 
         <h2 style={{ margin: '0 0 2px', fontSize: 20, fontWeight: 'normal', color: '#5a3010', textAlign: 'center' }}>
           Who's across the table?
         </h2>
+        <p style={{ margin: '2px 0 0', fontSize: 11.5, color: '#a07a40', fontStyle: 'italic', textAlign: 'center' }}>
+          New Charlies and playstyles unlock as you win games ({gamesWon} win{gamesWon === 1 ? '' : 's'} so far)
+        </p>
 
-        <Section title="Charlie's mood">
+        <Section title="Difficulty">
           {AI_TIERS.map(t => (
             <OptionRow
               key={t.id}
@@ -42,12 +45,14 @@ export default function OpponentPicker({ gamesWon, tier, style, onPick, onClose 
               selected={tier === t.id}
               locked={gamesWon < t.unlockWins}
               winsNeeded={t.unlockWins - gamesWon}
+              unlockWins={t.unlockWins}
+              gamesWon={gamesWon}
               onTap={() => onPick({ tier: t.id })}
             />
           ))}
         </Section>
 
-        <Section title="Charlie's strategy">
+        <Section title="Playstyle">
           {AI_STYLES.map(s => (
             <OptionRow
               key={s.id}
@@ -57,6 +62,8 @@ export default function OpponentPicker({ gamesWon, tier, style, onPick, onClose 
               selected={style === s.id}
               locked={gamesWon < s.unlockWins}
               winsNeeded={s.unlockWins - gamesWon}
+              unlockWins={s.unlockWins}
+              gamesWon={gamesWon}
               onTap={() => onPick({ style: s.id })}
             />
           ))}
@@ -93,7 +100,7 @@ function Section({ title, children }) {
   );
 }
 
-function OptionRow({ emoji, name, description, tag, selected, locked, winsNeeded, onTap }) {
+function OptionRow({ emoji, name, description, tag, selected, locked, winsNeeded, unlockWins, gamesWon, onTap }) {
   return (
     <button
       onPointerDown={locked ? undefined : onTap}
@@ -118,7 +125,7 @@ function OptionRow({ emoji, name, description, tag, selected, locked, winsNeeded
         </span>
         <span style={{ display: 'block', fontSize: 11, color: '#8a6a40', fontStyle: 'italic' }}>
           {locked
-            ? `win ${winsNeeded} more game${winsNeeded === 1 ? '' : 's'}`
+            ? `unlocks at ${unlockWins} wins — ${winsNeeded} more to go (${gamesWon}/${unlockWins})`
             : description}
         </span>
       </span>

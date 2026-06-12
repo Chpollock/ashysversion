@@ -5,6 +5,8 @@ import {
 } from '../game/roomStates.js';
 import { PETS, PET_ARRIVALS, getSpot } from '../game/petSpots.js';
 import { ACHIEVEMENTS, trinketEmoji } from '../game/achievements.js';
+import { AI_TIERS } from '../game/aiOpponents.js';
+import { hasSavedGame } from '../state/gameSession.js';
 
 const PET_TAP_COOLDOWN_MS = 1200;
 
@@ -15,10 +17,13 @@ export default function RoomScreen({
   const [now, setNow] = useState(() => Date.now());
   const [projectCardOpen, setProjectCardOpen] = useState(false);
   const [revealFlash, setRevealFlash] = useState(false);
+  const [revealTransition, setRevealTransition] = useState(null); // { from(img), key } during crossfade
   const [revealLine, setRevealLine] = useState(null);     // { text, key }
   const [arrival, setArrival] = useState(null);           // { name, line, key }
   const [trayOpen, setTrayOpen] = useState(false);
   const [trayDetail, setTrayDetail] = useState(null);     // achievement id
+  const [statsOpen, setStatsOpen] = useState(false);
+  const [resumeGame] = useState(() => hasSavedGame());    // a game waits mid-play
   const [songCardOpen, setSongCardOpen] = useState(false);
   const [petReactions, setPetReactions] = useState({});   // { petId: { emoji, key } }
   const [showWelcome, setShowWelcome] = useState(welcomeBack);
@@ -90,15 +95,17 @@ export default function RoomScreen({
     setProjectCardOpen(false);
   }
 
-  // She taps the finished work — sparkle flash, then the room becomes new
+  // She taps the finished work — a slow, warm crossfade from the old room to
+  // the new one, then the reveal line.
   function handleReveal() {
     if (!ready || !project) return;
+    const fromImage = roomImageForState(roomStateIndex);
+    setRevealTransition({ from: fromImage, key: Date.now() });
     setRevealFlash(true);
-    setTimeout(() => setRevealFlash(false), 950);
-    setTimeout(() => {
-      updateSave(s => ({ ...s, roomStateIndex: s.roomStateIndex + 1, activeProject: null }));
-      setRevealLine({ text: project.revealLine, key: Date.now() });
-    }, 420);
+    updateSave(s => ({ ...s, roomStateIndex: s.roomStateIndex + 1, activeProject: null }));
+    setTimeout(() => setRevealLine({ text: project.revealLine, key: Date.now() }), 1000);
+    setTimeout(() => setRevealFlash(false), 2300);
+    setTimeout(() => setRevealTransition(null), 2300);
   }
 
   useEffect(() => {
@@ -175,7 +182,13 @@ export default function RoomScreen({
         @keyframes hintMote { 0%,100% { opacity: 0.25; transform: translateY(0) scale(0.85); } 50% { opacity: 0.8; transform: translateY(-7px) scale(1.05); } }
         @keyframes buildPulse { 0%,100% { opacity: 0.65; } 50% { opacity: 1; } }
         @keyframes readyGlow { 0%,100% { box-shadow: 0 0 14px 4px rgba(245,200,80,0.45); opacity: 0.85; } 50% { box-shadow: 0 0 26px 9px rgba(245,200,80,0.8); opacity: 1; } }
-        @keyframes revealFlash { 0% { opacity: 0; } 35% { opacity: 1; } 100% { opacity: 0; } }
+        @keyframes revealFlash { 0% { opacity: 0; } 40% { opacity: 0.6; } 100% { opacity: 0; } }
+        @keyframes crossFadeOut { 0% { opacity: 1; } 100% { opacity: 0; } }
+        @keyframes bustlerCarry { 0% { transform: translateX(-11px); } 48% { transform: translateX(11px) translateY(-1px); } 52% { transform: translateX(11px) scaleX(-1); } 98% { transform: translateX(-11px) scaleX(-1) translateY(-1px); } 100% { transform: translateX(-11px); } }
+        @keyframes bustlerInspect { 0%,100% { transform: rotate(0deg); } 30% { transform: rotate(-10deg) translateY(-1px); } 60% { transform: rotate(9deg); } }
+        @keyframes dustPuff { 0% { opacity: 0; transform: translate(0,0) scale(0.5); } 30% { opacity: 0.95; } 100% { opacity: 0; transform: translate(var(--dx), -14px) scale(1.5); } }
+        @keyframes bustlerDance { 0%,100% { transform: rotate(-12deg) translateY(0); } 25% { transform: rotate(0deg) translateY(-5px); } 50% { transform: rotate(12deg) translateY(0); } 75% { transform: rotate(0deg) translateY(-5px); } }
+        @keyframes bustlerProud { 0%,100% { transform: scale(1.1) rotate(-2deg); } 50% { transform: scale(1.18) rotate(2deg) translateY(-2px); } }
         @keyframes revealLineIn { 0% { opacity: 0; transform: translate(-50%,8px); } 100% { opacity: 1; transform: translate(-50%,0); } }
         @keyframes coinFall { 0% { opacity: 0; transform: translateY(-26px) rotate(-30deg); } 30% { opacity: 1; } 100% { opacity: 0; transform: translateY(8px) rotate(12deg); } }
         @keyframes floatHeart { 0% { opacity: 0; transform: translateY(0) scale(0.6); } 30% { opacity: 1; } 100% { opacity: 0; transform: translateY(-46px) scale(1.1); } }
@@ -192,42 +205,75 @@ export default function RoomScreen({
       <img src={roomImageForState(roomStateIndex)} alt="living room" draggable={false}
         style={{ width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center', display: 'block' }} />
 
-      {/* The board — always tappable, always the way into the game */}
-      <div onPointerDown={onEnterGame} style={{
-        position: 'absolute',
-        left: `${board.x}%`, top: `${board.y}%`, width: `${board.w}%`, height: `${board.h}%`,
-        cursor: 'pointer', zIndex: 6, borderRadius: 14,
-        WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation',
-        animation: 'boardGlow 3.2s ease-in-out infinite',
-        display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
-      }}>
-        <span style={{
-          marginBottom: 6, fontSize: 12, color: '#fff8e0',
-          background: 'rgba(60,35,10,0.6)', padding: '3px 10px', borderRadius: 12,
-          textShadow: '0 1px 2px rgba(0,0,0,0.5)',
-        }}>Play ▸</span>
+      {/* During a reveal, the OLD room slowly fades away over the new one */}
+      {revealTransition && (
+        <img key={revealTransition.key} src={revealTransition.from} alt="" draggable={false}
+          style={{
+            position: 'absolute', inset: 0, width: '100%', height: '100%',
+            objectFit: 'cover', objectPosition: 'center', zIndex: 2, pointerEvents: 'none',
+            animation: 'crossFadeOut 2.2s ease-in-out both',
+          }} />
+      )}
+
+      {/* The board — the way into the game, once it exists. Before the first
+          project (Draw the Board) there IS no board yet, so tapping the box
+          opens that project instead. */}
+      <div
+        onPointerDown={roomStateIndex >= 1 ? onEnterGame : () => setProjectCardOpen(true)}
+        style={{
+          position: 'absolute',
+          left: `${board.x}%`, top: `${board.y}%`, width: `${board.w}%`, height: `${board.h}%`,
+          cursor: 'pointer', zIndex: 6, borderRadius: 14,
+          WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation',
+          animation: roomStateIndex >= 1 ? 'boardGlow 3.2s ease-in-out infinite' : 'none',
+          display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
+        }}
+      >
+        {roomStateIndex >= 1 && (
+          <span style={{
+            marginBottom: 6, fontSize: 12, color: '#fff8e0',
+            background: 'rgba(60,35,10,0.6)', padding: '3px 10px', borderRadius: 12,
+            textShadow: '0 1px 2px rgba(0,0,0,0.5)',
+          }}>{resumeGame ? 'Resume ▸' : 'Play ▸'}</span>
+        )}
       </div>
 
-      {/* ── The next project's marker ── */}
+      {/* ── The next project's marker — always obvious what's next ── */}
       {project && !ready && !building && (
         <div onPointerDown={() => setProjectCardOpen(true)} style={{
           position: 'absolute', left: `${project.hintPos.x}%`, top: `${project.hintPos.y}%`,
           transform: 'translate(-50%,-50%)', zIndex: 7, cursor: 'pointer',
-          width: 44, height: 44,
           WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3,
         }} aria-label={`Hint: ${project.name}`}>
-          {/* faint dust motes — diegetic, not a badge */}
-          {[0, 1, 2].map(i => (
-            <span key={i} style={{
-              position: 'absolute',
-              left: `${22 + i * 22}%`, top: `${30 + (i % 2) * 28}%`,
-              width: 5, height: 5, borderRadius: '50%',
-              background: 'rgba(255,240,190,0.9)',
-              animation: `hintMote ${2.4 + i * 0.5}s ease-in-out ${i * 0.4}s infinite`,
-            }} />
-          ))}
-          <span style={{ fontSize: 15, opacity: 0.65, animation: 'hintMote 3s ease-in-out infinite' }}>✨</span>
+          {/* warm glowing spot with drifting motes */}
+          <div style={{
+            position: 'relative', width: 46, height: 46,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            borderRadius: '50%',
+            background: 'radial-gradient(circle, rgba(255,238,180,0.75), rgba(245,205,100,0.3) 60%, transparent 72%)',
+            animation: 'readyGlow 2.2s ease-in-out infinite',
+          }}>
+            {[0, 1, 2].map(i => (
+              <span key={i} style={{
+                position: 'absolute',
+                left: `${20 + i * 24}%`, top: `${28 + (i % 2) * 30}%`,
+                width: 5, height: 5, borderRadius: '50%',
+                background: 'rgba(255,245,210,0.95)',
+                animation: `hintMote ${2.2 + i * 0.5}s ease-in-out ${i * 0.4}s infinite`,
+              }} />
+            ))}
+            <span style={{ fontSize: 18, animation: 'hintMote 2.8s ease-in-out infinite' }}>✨</span>
+          </div>
+          {/* the next thing, by name */}
+          <span style={{
+            fontSize: 11.5, color: '#fff8e0', whiteSpace: 'nowrap',
+            background: 'rgba(60,35,10,0.7)', padding: '3px 11px', borderRadius: 12,
+            textShadow: '0 1px 2px rgba(0,0,0,0.5)', fontStyle: 'italic',
+            animation: 'giftBob 2.4s ease-in-out infinite',
+          }}>
+            ✎ {project.name}
+          </span>
         </div>
       )}
 
@@ -235,12 +281,20 @@ export default function RoomScreen({
         <div onPointerDown={() => setProjectCardOpen(true)} style={{
           position: 'absolute', left: `${project.hintPos.x}%`, top: `${project.hintPos.y}%`,
           transform: 'translate(-50%,-50%)', zIndex: 7, cursor: 'pointer',
-          display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2,
+          display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3,
           WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation',
-          animation: 'buildPulse 1.6s ease-in-out infinite',
         }}>
-          <span style={{ fontSize: 24, filter: 'drop-shadow(0 2px 3px rgba(0,0,0,0.4))' }}>🧰</span>
-          <span style={{ fontSize: 13, marginTop: -6, opacity: 0.8 }}>💨</span>
+          <Bustler
+            mode="working"
+            progress={Math.min(1, Math.max(0, 1 - (active.completesAt - now) / project.durationMs))}
+          />
+          <span style={{
+            fontSize: 11, color: '#fff8e0', whiteSpace: 'nowrap',
+            background: 'rgba(60,35,10,0.7)', padding: '2px 10px', borderRadius: 12,
+            fontStyle: 'italic', textShadow: '0 1px 2px rgba(0,0,0,0.5)',
+          }}>
+            {formatDuration(Math.max(1000, active.completesAt - now))}…
+          </span>
         </div>
       )}
 
@@ -248,11 +302,19 @@ export default function RoomScreen({
         <div onPointerDown={handleReveal} style={{
           position: 'absolute', left: `${project.hintPos.x}%`, top: `${project.hintPos.y}%`,
           transform: 'translate(-50%,-50%)', zIndex: 7, cursor: 'pointer',
-          width: 38, height: 38, borderRadius: '50%',
-          background: 'radial-gradient(circle, rgba(255,235,170,0.95), rgba(245,200,80,0.5) 65%, transparent 75%)',
-          animation: 'readyGlow 1.3s ease-in-out infinite',
+          display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3,
           WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation',
-        }} aria-label="Reveal" />
+        }} aria-label="Reveal">
+          <Bustler mode="proud" />
+          <span style={{
+            fontSize: 11.5, color: '#fff8e0', whiteSpace: 'nowrap', fontWeight: 'bold',
+            background: 'rgba(140,90,20,0.85)', padding: '3px 11px', borderRadius: 12,
+            textShadow: '0 1px 2px rgba(0,0,0,0.5)',
+            animation: 'giftBob 1.6s ease-in-out infinite',
+          }}>
+            {project.name} — ready ✨
+          </span>
+        </div>
       )}
 
       {/* Type tray — achievements viewer, once the gallery wall is complete */}
@@ -275,6 +337,7 @@ export default function RoomScreen({
           fontSize: save.music.lyricsUnlocked ? 20 : 28,
           animation: 'presentGlow 2.2s ease-in-out infinite',
           WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation',
+          width: 48, height: 48, display: 'flex', alignItems: 'center', justifyContent: 'center',
         }} aria-label="A present">
           {save.music.lyricsUnlocked ? '💝' : '🎁'}
         </div>
@@ -306,6 +369,7 @@ export default function RoomScreen({
             animation: 'giftBob 1.6s ease-in-out infinite',
             WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation',
             fontSize: 26, filter: 'drop-shadow(0 0 8px rgba(245,200,80,0.9))',
+            width: 44, height: 44, display: 'flex', alignItems: 'center', justifyContent: 'center',
           }}>🎁</div>
         );
       })}
@@ -313,7 +377,7 @@ export default function RoomScreen({
       {/* ── HUD ── */}
       {/* Penny jar — top-left, fills as Pennies accumulate */}
       <div style={{
-        position: 'absolute', top: 10, left: 10, zIndex: 20,
+        position: 'absolute', top: 'calc(10px + env(safe-area-inset-top))', left: 10, zIndex: 20,
         display: 'flex', alignItems: 'center', gap: 7,
       }}>
         <div style={{ position: 'relative', width: 34, height: 42 }}>
@@ -353,7 +417,7 @@ export default function RoomScreen({
       </div>
 
       {/* Controls — top-right */}
-      <div style={{ position: 'absolute', top: 10, right: 10, zIndex: 20, display: 'flex', gap: 8 }}>
+      <div style={{ position: 'absolute', top: 'calc(10px + env(safe-area-inset-top))', right: 10, zIndex: 20, display: 'flex', gap: 8 }}>
         {save.music.lyricsUnlocked && (
           <button
             onPointerDown={() => updateSave(s => ({ ...s, music: { ...s.music, lyricsEnabled: !s.music.lyricsEnabled } }))}
@@ -363,6 +427,7 @@ export default function RoomScreen({
             {save.music.lyricsEnabled ? '🎤' : '🎼'}
           </button>
         )}
+        <button onPointerDown={() => setStatsOpen(true)} style={hudBtn} aria-label="Record book">📖</button>
         <button onPointerDown={onToggleMute} style={hudBtn} aria-label={muted ? 'Unmute' : 'Mute'}>
           {muted ? '🔇' : '🔉'}
         </button>
@@ -372,7 +437,7 @@ export default function RoomScreen({
       {/* Welcome back moment */}
       {showWelcome && (
         <div style={{
-          position: 'absolute', top: 64, left: '50%', zIndex: 25,
+          position: 'absolute', top: 'calc(64px + env(safe-area-inset-top))', left: '50%', zIndex: 25,
           animation: 'welcomeIn 0.5s ease-out', pointerEvents: 'none',
           background: 'rgba(60,40,15,0.82)', color: '#ffeec8',
           padding: '8px 18px', borderRadius: 18, fontStyle: 'italic', fontSize: 14,
@@ -382,12 +447,12 @@ export default function RoomScreen({
         </div>
       )}
 
-      {/* Reveal flash — a warm wash while the room becomes new */}
+      {/* Reveal wash — a soft warm glow that rises and settles with the fade */}
       {revealFlash && (
         <div style={{
           position: 'absolute', inset: 0, zIndex: 28, pointerEvents: 'none',
-          background: 'radial-gradient(circle, rgba(255,240,190,0.95), rgba(245,205,110,0.55))',
-          animation: 'revealFlash 0.95s ease-out both',
+          background: 'radial-gradient(circle, rgba(255,240,190,0.85), rgba(245,205,110,0.4))',
+          animation: 'revealFlash 2.3s ease-in-out both',
         }} />
       )}
 
@@ -510,6 +575,58 @@ export default function RoomScreen({
         </Modal>
       )}
 
+      {/* ── The record book (stats) ── */}
+      {statsOpen && (() => {
+        const st = save.stats;
+        const losses = st.gamesPlayed - st.gamesWon;
+        const winRate = st.gamesPlayed > 0 ? Math.round((st.gamesWon / st.gamesPlayed) * 100) : 0;
+        const achCount = Object.keys(unlockedAch).length;
+        return (
+          <Modal onClose={() => setStatsOpen(false)} wide>
+            <h3 style={{ margin: '0 0 2px', fontWeight: 'normal', color: '#5a3a1a', fontSize: 20 }}>The Record Book</h3>
+            <p style={{ margin: '0 0 12px', fontSize: 12, color: '#8a6f50', fontStyle: 'italic' }}>
+              Every game counts. Especially the silly ones.
+            </p>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, textAlign: 'left' }}>
+              <StatRow label="Record" value={`${st.gamesWon}–${losses}`} />
+              <StatRow label="Win rate" value={st.gamesPlayed > 0 ? `${winRate}%` : '—'} />
+              <StatRow label="Games played" value={st.gamesPlayed} />
+              <StatRow label="Current streak" value={st.currentWinStreak} />
+              <StatRow label="Best streak" value={st.bestWinStreak} />
+              <StatRow label="Today" value={st.gamesPlayedToday} />
+              <StatRow label="Pennies earned (ever)" value={`🪙 ${st.totalPenniesEarned}`} />
+              <StatRow label="Achievements" value={`${achCount} / ${ACHIEVEMENTS.length}`} />
+            </div>
+
+            <div style={{
+              margin: '14px 0 6px', fontSize: 12, color: '#a07a40',
+              fontStyle: 'italic', letterSpacing: 0.5, textAlign: 'left',
+            }}>
+              vs each Charlie
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+              {AI_TIERS.map(t => {
+                const w = st.winsByTier?.[t.id] ?? 0;
+                const g = st.gamesByTier?.[t.id] ?? 0;
+                return (
+                  <div key={t.id} style={{
+                    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                    background: 'rgba(255,250,235,0.6)', border: '1px solid rgba(150,110,60,0.25)',
+                    borderRadius: 10, padding: '5px 12px',
+                  }}>
+                    <span style={{ fontSize: 13, color: '#5a3a1a' }}>{t.emoji} {t.name}</span>
+                    <span style={{ fontSize: 12.5, color: '#8a6030' }}>
+                      {g > 0 ? `${w}–${Math.max(0, g - w)}` : 'not yet played'}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </Modal>
+        );
+      })()}
+
       {/* ── Song gift card ── */}
       {songCardOpen && (
         <Modal onClose={() => setSongCardOpen(false)}>
@@ -545,10 +662,117 @@ function Modal({ children, onClose, wide = false }) {
   );
 }
 
+// ── The Bustler ───────────────────────────────────────────────────────────────
+// A small hard worker who appears wherever a project is underway. He carries
+// things, inspects things, kicks up a great deal of dust, and — as it settles —
+// is caught dancing. When the work is done he stands there. Proud.
+// While he works, a light-grey ring shows the project's overall progress.
+
+const BUSTLER_PHASES = [
+  { id: 'carry', ms: 2800 },
+  { id: 'inspect', ms: 2200 },
+  { id: 'dust', ms: 2400 },
+  { id: 'dance', ms: 2600 },
+];
+
+function Bustler({ mode, progress = 0 }) {
+  const [phase, setPhase] = useState(0);
+
+  useEffect(() => {
+    if (mode !== 'working') return;
+    let idx = 0;
+    let t;
+    const advance = () => {
+      idx = (idx + 1) % BUSTLER_PHASES.length;
+      setPhase(idx);
+      t = setTimeout(advance, BUSTLER_PHASES[idx].ms);
+    };
+    t = setTimeout(advance, BUSTLER_PHASES[0].ms);
+    return () => clearTimeout(t);
+  }, [mode]);
+
+  const p = BUSTLER_PHASES[phase].id;
+  const R = 27;
+  const C = 2 * Math.PI * R;
+
+  return (
+    <div style={{ position: 'relative', width: 62, height: 62, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      {/* Overall progress — light grey ring */}
+      {mode === 'working' && (
+        <svg width="62" height="62" style={{ position: 'absolute', inset: 0, transform: 'rotate(-90deg)' }}>
+          <circle cx="31" cy="31" r={R} fill="none" stroke="rgba(255,255,255,0.3)" strokeWidth="3.5" />
+          <circle cx="31" cy="31" r={R} fill="none" stroke="rgba(218,218,212,0.95)" strokeWidth="3.5"
+            strokeLinecap="round" strokeDasharray={C} strokeDashoffset={(1 - progress) * C}
+            style={{ transition: 'stroke-dashoffset 1s linear' }} />
+        </svg>
+      )}
+
+      {mode === 'proud' ? (
+        <>
+          <span style={{
+            fontSize: 26, animation: 'bustlerProud 1.8s ease-in-out infinite',
+            filter: 'drop-shadow(0 2px 3px rgba(0,0,0,0.4)) drop-shadow(0 0 10px rgba(245,200,80,0.7))',
+          }}>🧑‍🔧</span>
+          <span style={{ position: 'absolute', left: 2, top: 8, fontSize: 12, animation: 'hintMote 2s ease-in-out infinite' }}>✨</span>
+          <span style={{ position: 'absolute', right: 2, top: 14, fontSize: 11, animation: 'hintMote 2.5s ease-in-out 0.5s infinite' }}>✨</span>
+        </>
+      ) : (
+        <>
+          {/* The worker himself, busy at his current task */}
+          <span style={{
+            fontSize: 23,
+            filter: 'drop-shadow(0 2px 3px rgba(0,0,0,0.4))',
+            opacity: p === 'dust' ? 0.3 : 1,
+            transition: 'opacity 0.5s',
+            animation: p === 'carry' ? 'bustlerCarry 2.8s linear infinite'
+              : p === 'inspect' ? 'bustlerInspect 2.2s ease-in-out infinite'
+              : p === 'dance' ? 'bustlerDance 1.3s ease-in-out infinite'
+              : 'none',
+          }}>
+            {p === 'dance' ? '🕺' : '🧑‍🔧'}
+          </span>
+
+          {/* What he's hauling / pondering */}
+          {p === 'carry' && (
+            <span style={{ position: 'absolute', bottom: 12, fontSize: 12, animation: 'bustlerCarry 2.8s linear infinite' }}>📦</span>
+          )}
+          {p === 'inspect' && (
+            <span style={{ position: 'absolute', top: 6, right: 10, fontSize: 11, animation: 'hintMote 2.2s ease-in-out infinite' }}>🤔</span>
+          )}
+
+          {/* The dust — billowing during 'dust', settling as he dances */}
+          {(p === 'dust' || p === 'dance') && [0, 1, 2].map(i => (
+            <span key={`${p}-${i}`} style={{
+              position: 'absolute',
+              left: `${16 + i * 22}%`, bottom: `${14 + (i % 2) * 16}%`,
+              fontSize: p === 'dust' ? 15 : 10,
+              '--dx': `${(i - 1) * 12}px`,
+              animation: `dustPuff ${1.1 + i * 0.3}s ease-out ${i * 0.25}s infinite`,
+              opacity: p === 'dance' ? 0.4 : 1,
+            }}>💨</span>
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
+function StatRow({ label, value }) {
+  return (
+    <div style={{
+      background: 'rgba(255,250,235,0.6)', border: '1px solid rgba(150,110,60,0.25)',
+      borderRadius: 10, padding: '6px 11px',
+    }}>
+      <div style={{ fontSize: 10.5, color: '#a07a40', fontStyle: 'italic' }}>{label}</div>
+      <div style={{ fontSize: 15, color: '#5a3a1a', fontWeight: 'bold' }}>{value}</div>
+    </div>
+  );
+}
+
 // A pet at a spot. Shows its pose image, or a clearly-marked placeholder when the
 // art doesn't exist yet. Gentle breathing loop = "alive". Tap → heart + reaction.
 function Pet({ def, spot, reaction, onTap }) {
-  const size = 11; // % of room width
+  const size = 12; // % of room width — ≥44px even on small phones
   return (
     <div
       onPointerDown={onTap}
@@ -599,4 +823,6 @@ const hudBtn = {
   background: 'rgba(255,240,200,0.9)', border: '1px solid rgba(180,140,70,0.5)',
   borderRadius: 14, padding: '5px 10px', fontSize: 16, lineHeight: 1, cursor: 'pointer',
   boxShadow: '0 2px 6px rgba(0,0,0,0.2)', WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation',
+  minWidth: 44, minHeight: 44, // comfortable thumb target
+  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
 };

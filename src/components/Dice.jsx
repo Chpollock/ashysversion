@@ -91,7 +91,7 @@ function DieFace({ value, used, isDouble, hoverable, active, size = 44 }) {
 
 // ─── Dice faces (rendered on the board) ───────────────────────────────────────
 // rollId increments on every roll, so both players' throws animate.
-export function DiceFaces({ dice, usedDice, dieMoves = {}, phase, currentPlayer, rollId = 0, onHoverDie, size = 36, label = null }) {
+export function DiceFaces({ dice, usedDice, dieMoves = {}, phase, rollId = 0, onHoverDie, size = 36, label = null }) {
   // 'resting' | 'throwing' | 'settling'
   const [throwState, setThrowState] = useState('resting');
   const [flyFaces, setFlyFaces] = useState([]);
@@ -125,8 +125,9 @@ export function DiceFaces({ dice, usedDice, dieMoves = {}, phase, currentPlayer,
     onHoverDie?.(i);
   }
 
-  // A die is hoverable (to reveal which piece it moved) once it's been used this turn
-  const canHover = currentPlayer === 'ashton' && phase === 'moving';
+  // A die is hoverable (to reveal which piece it moved) once it's been used —
+  // during EITHER side's turn, and after a turn ends while the dice still rest.
+  const canHover = phase === 'moving' || phase === 'rolling';
 
   const faces = dice.map((val, i) => (isThrowing ? (flyFaces[i] ?? val) : val));
 

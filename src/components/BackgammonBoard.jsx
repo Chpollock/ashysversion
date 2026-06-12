@@ -79,7 +79,7 @@ function barPos(config, player, stackIndex) {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export default function BackgammonBoard({ state, onSelectPiece, onMovePath, onBlockedTap, boardId = 'sharpie', pieceSet = 'paper', flashPoint = null, charlieTrail = [], hoverPoint = null }) {
+export default function BackgammonBoard({ state, onSelectPiece, onMovePath, onBlockedTap, onTrailHover, boardId = 'sharpie', pieceSet = 'paper', flashPoint = null, liftPoint = null, charlieTrail = [], hoverPoint = null, hoverMove = null }) {
   const config = boards[boardId] ?? boards['sharpie'];
   const boardRef = useRef(null);
 
@@ -341,17 +341,32 @@ export default function BackgammonBoard({ state, onSelectPiece, onMovePath, onBl
           return <UnderCircle x={pos.x} y={pos.y} cs={cs} variant="hover" />;
         })()}
 
+        {/* Hovering a used die (or a piece Charlie moved): a golden arrow traces
+            the move from where the piece CAME FROM to where it landed. */}
+        {!CALIBRATION_MODE && hoverMove && (() => {
+          const mover = hoverMove.mover ?? 'charlie';
+          const fromPos = hoverMove.from === 'bar'
+            ? config.bar[mover]
+            : config.points[hoverMove.from];
+          const toPos = hoverMove.to === 'off'
+            ? config.bearOff[mover]
+            : checkerPos(config, hoverMove.to, Math.max(0, (points[hoverMove.to]?.count ?? 1) - 1));
+          if (!fromPos || !toPos) return null;
+          return <MoveArrow from={fromPos} to={toPos} />;
+        })()}
+
         {/* Checkers on points */}
         {points.map((pt, i) => {
           if (!pt.count || !pt.player) return null;
           const canMove = moveableSources.has(i) && selectedPoint !== i;
+          const inTrail = pt.player === 'charlie' && charlieTrail.includes(i);
           return Array.from({ length: pt.count }).map((_, si) => {
             const pos = checkerPos(config, i, si);
             const img = getImg(pt.player, i, si, pieceImages, pieceSet);
             const isTop = si === pt.count - 1;
             return (
               <Checker key={`pt-${i}-${si}`} x={pos.x} y={pos.y} cs={cs} player={pt.player} img={img}
-                selected={selectedPoint === i && isTop}
+                selected={(selectedPoint === i || liftPoint === i) && isTop}
                 isTopmost={isTop}
                 zOrder={si}
                 canMove={canMove && isTop}
@@ -362,6 +377,8 @@ export default function BackgammonBoard({ state, onSelectPiece, onMovePath, onBl
                 onDragMove={moveDrag}
                 onDragEnd={() => endDrag(() => handlePointTap(i))}
                 onDragCancel={cancelDrag}
+                onPeekStart={inTrail && isTop ? () => onTrailHover?.(i) : undefined}
+                onPeekEnd={inTrail && isTop ? () => onTrailHover?.(null) : undefined}
                 interactive={!CALIBRATION_MODE && phase === 'moving' && currentPlayer === 'ashton' && pt.player === 'ashton'}
               />
             );
@@ -419,9 +436,11 @@ export default function BackgammonBoard({ state, onSelectPiece, onMovePath, onBl
         {Array.from({ length: bar.charlie }).map((_, i) => {
           const pos = barPos(config, 'charlie', i);
           const img = getImg('charlie', 25, i, pieceImages, pieceSet);
+          const isTop = i === bar.charlie - 1;
           return (
             <Checker key={`bar-c-${i}`} x={pos.x} y={pos.y} cs={cs} player="charlie" img={img}
-              selected={false} isTopmost={false} onTap={() => {}} interactive={false}
+              selected={liftPoint === 'bar' && state.currentPlayer === 'charlie' && isTop}
+              isTopmost={false} interactive={false}
             />
           );
         })}
@@ -460,7 +479,8 @@ export default function BackgammonBoard({ state, onSelectPiece, onMovePath, onBl
           );
         })()}
 
-        {/* Point tap targets (triangle areas) */}
+        {/* Point tap targets (triangle areas) — kept strictly INSIDE the board:
+            top points cover 6–48%, bottom points 52–94% of its height. */}
         {!CALIBRATION_MODE && Array.from({ length: 24 }).map((_, i) => {
           const base     = config.points[i];
           const isBottom = i <= 11;
@@ -470,9 +490,8 @@ export default function BackgammonBoard({ state, onSelectPiece, onMovePath, onBl
               style={{
                 position: 'absolute',
                 left: `${base.x - cs / 2}%`,
-                top:  isBottom ? '52%' : `${base.y}%`,
+                top:  isBottom ? '52%' : '6%',
                 width: `${cs}%`, height: '42%',
-                transform: isBottom ? 'none' : 'translateY(-100%)',
                 zIndex: 8, cursor: 'pointer',
               }} />
           );
@@ -484,7 +503,7 @@ export default function BackgammonBoard({ state, onSelectPiece, onMovePath, onBl
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
-function Checker({ x, y, cs, player, img, selected, isTopmost, zOrder = 0, canMove = false, isFlashing = false, isNudging = false, isGhost = false, onDragStart, onDragMove, onDragEnd, onDragCancel, interactive }) {
+function Checker({ x, y, cs, player, img, selected, isTopmost, zOrder = 0, canMove = false, isFlashing = false, isNudging = false, isGhost = false, onDragStart, onDragMove, onDragEnd, onDragCancel, onPeekStart, onPeekEnd, interactive }) {
   // Box shadow: priority — selected > flashing > default
   let innerShadow;
   if (selected) {
@@ -505,12 +524,17 @@ function Checker({ x, y, cs, player, img, selected, isTopmost, zOrder = 0, canMo
     : 'none';
 
   const draggable = interactive && isTopmost;
+  const peekable = !draggable && isTopmost && !!onPeekStart;
   return (
     <div
-      onPointerDown={draggable ? (e) => { e.stopPropagation(); onDragStart?.(e); } : undefined}
+      onPointerDown={draggable ? (e) => { e.stopPropagation(); onDragStart?.(e); }
+        : peekable ? (e) => { e.stopPropagation(); onPeekStart(); } : undefined}
       onPointerMove={draggable ? onDragMove : undefined}
-      onPointerUp={draggable ? (e) => { e.stopPropagation(); onDragEnd?.(e); } : undefined}
-      onPointerCancel={draggable ? onDragCancel : undefined}
+      onPointerUp={draggable ? (e) => { e.stopPropagation(); onDragEnd?.(e); }
+        : peekable ? onPeekEnd : undefined}
+      onPointerEnter={peekable ? onPeekStart : undefined}
+      onPointerLeave={peekable ? onPeekEnd : undefined}
+      onPointerCancel={draggable ? onDragCancel : peekable ? onPeekEnd : undefined}
       style={{
         position: 'absolute', left: `${x}%`, top: `${y}%`,
         width: `${cs}%`, paddingTop: `${cs}%`,
@@ -519,7 +543,7 @@ function Checker({ x, y, cs, player, img, selected, isTopmost, zOrder = 0, canMo
         // Above the point tap zones (z 8) so a press picks the checker up
         // immediately — no select-first needed before dragging.
         zIndex: selected ? 50 : 12 + zOrder,
-        cursor: draggable ? 'grab' : 'default',
+        cursor: draggable ? 'grab' : peekable ? 'pointer' : 'default',
         pointerEvents: isTopmost ? 'auto' : 'none',
         // Stop the page scrolling while a checker is being dragged on touch
         touchAction: draggable ? 'none' : undefined,
@@ -559,6 +583,40 @@ function DestDot({ x, y, cs, onTap }) {
         boxShadow: '0 0 16px rgba(240,185,50,0.95), 0 2px 6px rgba(90,50,10,0.35)',
         animation: 'pulse 1.2s ease-in-out infinite', pointerEvents: 'auto',
       }} />
+  );
+}
+
+// A curved golden arrow tracing a move: dashed marching line from the origin
+// (ghost ring) to the destination, arcing gently toward the board's middle.
+function MoveArrow({ from, to }) {
+  const mx = (from.x + to.x) / 2;
+  const my = (from.y + to.y) / 2;
+  const cy = my + (50 - my) * 0.55; // pull the curve toward the open middle band
+  const d = `M ${from.x} ${from.y} Q ${mx} ${cy} ${to.x} ${to.y}`;
+  return (
+    <svg viewBox="0 0 100 100" preserveAspectRatio="none" style={{
+      position: 'absolute', inset: 0, width: '100%', height: '100%',
+      zIndex: 28, pointerEvents: 'none', overflow: 'visible',
+    }}>
+      <defs>
+        <marker id="moveArrowTip" viewBox="0 0 10 10" refX="7" refY="5"
+          markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+          <path d="M 0 1 L 9 5 L 0 9 z" fill="rgba(245,205,90,0.95)" />
+        </marker>
+      </defs>
+      {/* soft dark underglow so the arrow reads on light cardboard */}
+      <path d={d} fill="none" stroke="rgba(80,45,10,0.4)" strokeWidth="6.5"
+        vectorEffect="non-scaling-stroke" strokeLinecap="round" />
+      {/* marching golden dashes, tipped with an arrowhead */}
+      <path d={d} fill="none" stroke="rgba(245,205,90,0.95)" strokeWidth="3"
+        vectorEffect="non-scaling-stroke" strokeLinecap="round"
+        strokeDasharray="8 7" markerEnd="url(#moveArrowTip)"
+        style={{ animation: 'arrowMarch 0.8s linear infinite' }} />
+      {/* ghost ring where the piece came from */}
+      <circle cx={from.x} cy={from.y} r="2.4" fill="none"
+        stroke="rgba(245,205,90,0.9)" strokeWidth="2.5"
+        vectorEffect="non-scaling-stroke" strokeDasharray="4 3" />
+    </svg>
   );
 }
 
