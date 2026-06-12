@@ -48,10 +48,13 @@ export function createInitialState() {
     points,
     bar: { ashton: 0, charlie: 0 },
     borneOff: { ashton: 0, charlie: 0 },
-    currentPlayer: 'ashton',
+    currentPlayer: 'ashton', // placeholder until the opening roll decides
     dice: [],          // raw rolled values e.g. [3,3,3,3] for doubles
     usedDice: [],      // indices into dice that have been consumed
-    phase: 'rolling',  // 'rolling' | 'moving' | 'gameover'
+    diceOwner: null,   // who rolled the dice on the table: 'ashton' | 'charlie' | 'opening'
+    rollId: 0,         // increments per roll — lets the UI animate each throw
+    turnCount: 0,      // completed turns this game (for abandonment thresholds)
+    phase: 'opening',  // 'opening' | 'rolling' | 'moving' | 'gameover'
     winner: null,
     selectedPoint: null, // point index or 'bar' of the selected piece
     pieceImages: {
@@ -200,8 +203,8 @@ function isOutermostPiece(state, player, pointIndex) {
   return false;
 }
 
-// All legal moves for the current player given current dice state
-export function allLegalMoves(state) {
+// All single-die moves with no forced-move filtering applied.
+function rawAllLegalMoves(state) {
   const player = state.currentPlayer;
   const avail = availableDice(state);
   if (!avail.length) return [];
@@ -232,10 +235,126 @@ export function allLegalMoves(state) {
   return [...moves].map(m => JSON.parse(m));
 }
 
+// ─── Forced-move rules ───────────────────────────────────────────────────────
+// Real backgammon: you must play as many dice as possible, and when only one of
+// two different dice can be played, it must be the larger one. We enforce this
+// by filtering the raw move list so a move that strands a playable die is never
+// offered (to the UI highlights, the reducer, or the AI).
+
+// Apply a raw move AND consume the physical die it used, so availableDice()
+// works on the simulated state. (applyMoveToBoard alone doesn't touch usedDice.)
+function applyAndConsume(state, move) {
+  const dieIdx = state.dice.findIndex((d, i) => d === move.die && !state.usedDice.includes(i));
+  return { ...applyMoveToBoard(state, move.from, move.to), usedDice: [...state.usedDice, dieIdx] };
+}
+
+// Compact signature of board + remaining dice, for memoising the search.
+// (borneOff is implied by points+bar; currentPlayer is constant per search.)
+function stateKey(state) {
+  let s = '';
+  for (let i = 0; i < 24; i++) {
+    const pt = state.points[i];
+    s += pt.count ? (pt.player === 'ashton' ? 'a' : 'c') + pt.count : '.';
+  }
+  return s + '|' + state.bar.ashton + ',' + state.bar.charlie + '|' + availableDice(state).join(',');
+}
+
+// Maximum number of dice playable from this state (DFS, memoised per call).
+function maxPlayable(state, memo = new Map()) {
+  const key = stateKey(state);
+  if (memo.has(key)) return memo.get(key);
+  const limit = availableDice(state).length;
+  let best = 0;
+  for (const m of rawAllLegalMoves(state)) {
+    const depth = 1 + maxPlayable(applyAndConsume(state, m), memo);
+    if (depth > best) best = depth;
+    if (best === limit) break; // can't do better
+  }
+  memo.set(key, best);
+  return best;
+}
+
+// States are immutable, so the strict move list can be cached per state object
+// (this is called from the reducer, the board memo and the AI on the same state).
+const strictMovesCache = new WeakMap();
+
+// All legal moves for the current player, with forced-move rules enforced:
+// a move is legal iff it still allows the maximum number of dice to be played,
+// and the larger die wins when only one of two different dice can be played.
+export function allLegalMoves(state) {
+  const cached = strictMovesCache.get(state);
+  if (cached) return cached;
+
+  const raw = rawAllLegalMoves(state);
+  let filtered = raw;
+
+  if (raw.length > 1) {
+    const memo = new Map();
+    const max = maxPlayable(state, memo);
+    filtered = raw.filter(m => 1 + maxPlayable(applyAndConsume(state, m), memo) === max);
+
+    // Larger-die rule: only one die can be played and the two dice differ
+    const avail = availableDice(state);
+    if (max === 1 && avail.length === 2 && avail[0] !== avail[1]) {
+      const larger = Math.max(avail[0], avail[1]);
+      const largerMoves = filtered.filter(m => m.die === larger);
+      if (largerMoves.length) filtered = largerMoves;
+    }
+  }
+
+  strictMovesCache.set(state, filtered);
+  return filtered;
+}
+
+// Why moves are currently being filtered out (for a gentle UI hint):
+//   null         — nothing filtered (or no moves at all)
+//   'use-both'   — a move was dropped because it would strand a playable die
+//   'use-larger' — only one die fits, so the larger one must be played
+export function moveRestriction(state) {
+  const raw = rawAllLegalMoves(state);
+  const strict = allLegalMoves(state);
+  if (strict.length === raw.length) return null;
+
+  const avail = availableDice(state);
+  if (avail.length === 2 && avail[0] !== avail[1]) {
+    const larger = Math.max(avail[0], avail[1]);
+    if (strict.every(m => m.die === larger) && raw.some(m => m.die !== larger)
+        && maxPlayable(state) === 1) {
+      return 'use-larger';
+    }
+  }
+  return 'use-both';
+}
+
+// All maximal turn sequences (each plays the most dice possible), deduplicated
+// by final board position. Used by the strongest AI to evaluate whole turns.
+// Searching with the strict allLegalMoves guarantees every path reaches the max.
+export function enumerateMaxSequences(state, cap = 2000) {
+  const max = maxPlayable(state);
+  if (max === 0) return [];
+  const sequences = [];
+  const seen = new Set();
+
+  function search(curState, path) {
+    if (path.length === max) {
+      const key = stateKey(curState);
+      if (!seen.has(key)) { seen.add(key); sequences.push(path); }
+      return;
+    }
+    for (const m of allLegalMoves(curState)) {
+      if (sequences.length >= cap) return;
+      search(applyAndConsume(curState, m), [...path, m]);
+    }
+  }
+  search(state, []);
+  return sequences;
+}
+
 // ─── Reducer ─────────────────────────────────────────────────────────────────
 
 export function gameReducer(state, action) {
   switch (action.type) {
+    case 'OPENING_ROLL': return handleOpeningRoll(state, action);
     case 'ROLL_DICE': return handleRollDice(state, action);
     case 'SELECT_PIECE': return handleSelectPiece(state, action.point);
     case 'MOVE_PIECE': return handleMovePiece(state, action.from, action.to);
@@ -243,6 +362,9 @@ export function gameReducer(state, action) {
     case 'END_TURN': return handleEndTurn(state);
     case 'UNDO': return handleUndo(state);
     case 'NEW_GAME': return createInitialState();
+    // Dev-only shortcut (wired behind import.meta.env.DEV in the UI):
+    // jump straight to a finished game to preview the rewards screen.
+    case 'DEBUG_END_GAME': return handleDebugEndGame(state, action);
     default: return state;
   }
 }
@@ -253,6 +375,31 @@ export function rollDiceValues() {
   const d1 = Math.floor(Math.random() * 6) + 1;
   const d2 = Math.floor(Math.random() * 6) + 1;
   return d1 === d2 ? [d1, d1, d1, d1] : [d1, d2];
+}
+
+// Each player rolls one die; the higher roll goes first. The component rerolls
+// ties before dispatching, so a tie here is simply rejected.
+export function rollOpeningValues() {
+  let ashtonDie, charlieDie;
+  do {
+    ashtonDie = Math.floor(Math.random() * 6) + 1;
+    charlieDie = Math.floor(Math.random() * 6) + 1;
+  } while (ashtonDie === charlieDie);
+  return { ashtonDie, charlieDie };
+}
+
+function handleOpeningRoll(state, action) {
+  if (state.phase !== 'opening') return state;
+  const { ashtonDie, charlieDie } = action;
+  if (!ashtonDie || !charlieDie || ashtonDie === charlieDie) return state;
+  return {
+    ...state,
+    currentPlayer: ashtonDie > charlieDie ? 'ashton' : 'charlie',
+    dice: [ashtonDie, charlieDie], // rest visibly until the first real roll
+    diceOwner: 'opening',
+    rollId: state.rollId + 1,
+    phase: 'rolling',
+  };
 }
 
 function handleRollDice(state, action) {
@@ -267,12 +414,14 @@ function handleRollDice(state, action) {
     eventLog = [...eventLog, { type: EV.DOUBLES_ROLLED, player: state.currentPlayer, value: dice[0] }];
   }
 
-  const next = { ...state, dice, usedDice: [], phase: 'moving', selectedPoint: null, eventLog, dieMoves: {} };
+  const next = {
+    ...state, dice, usedDice: [], phase: 'moving', selectedPoint: null, eventLog, dieMoves: {},
+    diceOwner: state.currentPlayer,
+    rollId: state.rollId + 1,
+  };
 
-  // If no legal moves exist, auto-pass
-  if (allLegalMoves(next).length === 0) {
-    return { ...next, phase: 'rolling', currentPlayer: opponent(state.currentPlayer), dice: [], usedDice: [], turnStartSnapshot: null, dieMoves: {} };
-  }
+  // No auto-pass here: even with no legal moves the dice stay visible and the
+  // turn ends explicitly (Ashton taps End turn; Charlie's orchestration ends it).
 
   // Save undo snapshot for Ashton only (state as-of-roll, moves undone)
   if (state.currentPlayer === 'ashton') {
@@ -297,10 +446,9 @@ function handleSelectPiece(state, point) {
     if (state.points[point].player !== state.currentPlayer) return state;
   }
 
-  // Check this source has at least one legal move
-  const avail = availableDice(state);
-  const uniqueDice = [...new Set(avail)];
-  const hasMove = uniqueDice.some(die => legalMovesForDie(state, point, die).length > 0);
+  // Check this source has at least one legal move under the forced-move rules
+  // (matches the moveableSources glow, which also uses allLegalMoves)
+  const hasMove = allLegalMoves(state).some(m => m.from === point);
   if (!hasMove) return state;
 
   return { ...state, selectedPoint: point };
@@ -313,11 +461,25 @@ function consumeMove(state, from, to) {
   // Find which available die value enables from→to
   const avail = availableDice(state);
   const uniqueDice = [...new Set(avail)];
-  let usedDie = null;
+  const candidates = [];
   for (const die of uniqueDice) {
-    if (legalMovesForDie(state, from, die).some(m => m.to === to)) { usedDie = die; break; }
+    if (legalMovesForDie(state, from, die).some(m => m.to === to)) candidates.push(die);
   }
-  if (usedDie === null) return null;
+  if (!candidates.length) return null;
+
+  let usedDie = candidates[0];
+  if (candidates.length > 1) {
+    // Tie-break (bear-off: exact die vs over-roll with a bigger die) — prefer
+    // the die that doesn't strand another playable die.
+    const memo = new Map();
+    const before = maxPlayable(state, memo);
+    for (const die of candidates) {
+      if (1 + maxPlayable(applyAndConsume(state, { from, to, die }), memo) === before) {
+        usedDie = die;
+        break;
+      }
+    }
+  }
 
   const dieIdx = state.dice.findIndex((d, i) => d === usedDie && !state.usedDice.includes(i));
   if (dieIdx === -1) return null;
@@ -365,7 +527,19 @@ function consumeMove(state, from, to) {
   // Win?
   if (borneOff[player] === 15) {
     let finalLog = eventLog;
-    if (borneOff[opp] === 0) finalLog = [...finalLog, { type: EV.GAMMON_WON, player }];
+    if (borneOff[opp] === 0) {
+      finalLog = [...finalLog, { type: EV.GAMMON_WON, player }];
+      // Backgammon (triple): the loser also has a checker on the bar or still
+      // inside the winner's home board.
+      const [lo, hi] = homeRange(player);
+      let oppInWinnersHome = false;
+      for (let i = lo; i <= hi; i++) {
+        if (points[i].player === opp && points[i].count > 0) oppInWinnersHome = true;
+      }
+      if (bar[opp] > 0 || oppInWinnersHome) {
+        finalLog = [...finalLog, { type: EV.BACKGAMMON_WON, player }];
+      }
+    }
     if (player === 'ashton' && pipStats.ashtonMaxDeficit > 30) {
       finalLog = [...finalLog, { type: EV.WON_FROM_BEHIND, player, deficit: pipStats.ashtonMaxDeficit }];
     }
@@ -380,9 +554,12 @@ function consumeMove(state, from, to) {
   return { ...state, points, bar, borneOff, usedDice, dieMoves, pipStats, eventLog, selectedPoint: null };
 }
 
-// End the turn automatically when all dice are spent or no legal move remains.
+// After a move: Charlie's turn ends automatically when all dice are spent or
+// no legal move remains. Ashton's turn waits for an explicit END_TURN so the
+// dice stay up and Undo remains available.
 function settleAfterMoves(state) {
   if (state.phase !== 'moving') return state; // already won/ended
+  if (state.currentPlayer === 'ashton') return state;
   if (state.usedDice.length === state.dice.length || allLegalMoves(state).length === 0) {
     return endTurn(state);
   }
@@ -415,7 +592,22 @@ function handleMovePath(state, steps) {
 function handleEndTurn(state) {
   // Guard: only end the turn if we're still in the moving phase
   if (state.phase !== 'moving') return state;
+  // Ashton can't end early while legal moves remain (must play the maximum).
+  // Charlie stays permissive — it's the AI orchestration's safety valve.
+  if (state.currentPlayer === 'ashton' && allLegalMoves(state).length > 0) return state;
   return endTurn(state);
+}
+
+function handleDebugEndGame(state, action) {
+  if (state.phase === 'gameover') return state;
+  const winner = action.winner === 'charlie' ? 'charlie' : 'ashton';
+  return {
+    ...state,
+    borneOff: { ...state.borneOff, [winner]: 15 },
+    phase: 'gameover',
+    winner,
+    selectedPoint: null,
+  };
 }
 
 function handleUndo(state) {
@@ -427,17 +619,18 @@ function handleUndo(state) {
 }
 
 function endTurn(state) {
-  const next = {
+  return {
     ...state,
+    turnCount: state.turnCount + 1,
     currentPlayer: opponent(state.currentPlayer),
-    dice: [],
-    usedDice: [],
+    // Keep the dice on the table (all marked used) until the next roll
+    // replaces them — they only "disappear" by being rolled over.
+    usedDice: state.dice.map((_, i) => i),
     phase: 'rolling',
     selectedPoint: null,
     turnStartSnapshot: null,
     dieMoves: {},
   };
-  return next;
 }
 
 // Minimal board update used by the combined-move search (no events/win logic).
@@ -477,16 +670,28 @@ export function reachableTargets(state, fromPoint) {
   const avail = [];
   state.dice.forEach((value, idx) => { if (!state.usedDice.includes(idx)) avail.push({ value, idx }); });
 
+  // Forced-move rules: the FIRST step must be one of the strict legal moves
+  // (which already encode the larger-die rule correctly), and no step may
+  // strand a playable die.
+  const memo = new Map();
+  const origMax = maxPlayable(state, memo);
+  const strictFirst = allLegalMoves(state);
+
   function search(curState, curFrom, usedIdx, path) {
     for (const { value, idx } of avail) {
       if (usedIdx.has(idx)) continue;
+      if (path.length === 0
+          && !strictFirst.some(s => s.from === curFrom && s.die === value)) continue;
       for (const m of legalMovesForDie(curState, curFrom, value)) {
         const newPath = [...path, { from: curFrom, to: m.to, die: value }];
+        // Simulated post-move state (board + consumed die); skip paths that
+        // would lock out playing the maximum number of dice.
+        const nextState = { ...applyMoveToBoard(curState, curFrom, m.to), usedDice: [...curState.usedDice, idx] };
+        if (maxPlayable(nextState, memo) !== origMax - newPath.length) continue;
         const existing = result.get(m.to);
         if (!existing || newPath.length < existing.length) result.set(m.to, newPath);
         // Continue chaining from a landed point (can't chain off the board)
         if (typeof m.to === 'number') {
-          const nextState = applyMoveToBoard(curState, curFrom, m.to);
           search(nextState, m.to, new Set([...usedIdx, idx]), newPath);
         }
       }

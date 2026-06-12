@@ -1,17 +1,28 @@
-import { useState } from 'react';
-import { SHOP_CATEGORIES, SHOP_ITEMS, isOwned, applyPurchase } from '../game/shopItems.js';
+import { useState, useEffect } from 'react';
+import { SHOP_ITEMS, isOwned, applyPurchase } from '../game/shopItems.js';
+import { nextProject, beginProject, projectDone, PROJECTS, formatDuration } from '../game/roomStates.js';
+import { PETS, PET_ARRIVALS } from '../game/petSpots.js';
+
+const TABS = [
+  { id: 'projects', label: 'Projects' },
+  { id: 'pets', label: 'Pets' },
+  { id: 'rooms', label: 'Rooms' },
+  { id: 'cosmetics', label: 'Boards & Pieces' },
+];
 
 export default function ShopScreen({ save, updateSave, onBack }) {
-  const [activeCat, setActiveCat] = useState(SHOP_CATEGORIES[0].id);
-  const [justBought, setJustBought] = useState(null); // item id, for a brief confirm pulse
+  const [tab, setTab] = useState('projects');
+  const [justBought, setJustBought] = useState(null);
+  const [now, setNow] = useState(() => Date.now());
 
-  const items = SHOP_ITEMS.filter(i => i.category === activeCat);
+  // Tick so arrival/build countdowns stay live
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
 
-  function handleBuy(item) {
-    if (isOwned(item, save)) return;
-    if (save.pennies < item.price) return;
-    updateSave(s => applyPurchase(s, item));
-    setJustBought(item.id);
+  function flash(id) {
+    setJustBought(id);
     setTimeout(() => setJustBought(null), 900);
   }
 
@@ -36,94 +47,259 @@ export default function ShopScreen({ save, updateSave, onBack }) {
         </span>
       </div>
 
-      {/* Category tabs */}
+      {/* Tabs */}
       <div style={{ display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap', justifyContent: 'center' }}>
-        {SHOP_CATEGORIES.map(cat => (
-          <button
-            key={cat.id}
-            onPointerDown={() => setActiveCat(cat.id)}
-            style={{
-              padding: '6px 12px', borderRadius: 14,
-              border: '1.5px solid ' + (activeCat === cat.id ? '#b8843c' : 'rgba(150,110,60,0.3)'),
-              background: activeCat === cat.id ? 'linear-gradient(135deg,#e8b45a,#c8862a)' : 'rgba(255,250,235,0.6)',
-              color: activeCat === cat.id ? '#fff8e7' : '#7a5430',
-              fontFamily: 'Georgia, serif', fontSize: 12.5, cursor: 'pointer',
-              WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation',
-            }}
-          >
-            {cat.label}
+        {TABS.map(t => (
+          <button key={t.id} onPointerDown={() => setTab(t.id)} style={{
+            padding: '6px 12px', borderRadius: 14,
+            border: '1.5px solid ' + (tab === t.id ? '#b8843c' : 'rgba(150,110,60,0.3)'),
+            background: tab === t.id ? 'linear-gradient(135deg,#e8b45a,#c8862a)' : 'rgba(255,250,235,0.6)',
+            color: tab === t.id ? '#fff8e7' : '#7a5430',
+            fontFamily: 'Georgia, serif', fontSize: 12.5, cursor: 'pointer',
+            WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation',
+          }}>
+            {t.label}
           </button>
         ))}
       </div>
 
-      {/* Item list */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 480, width: '100%', margin: '0 auto' }}>
-        {items.map(item => {
-          const owned = isOwned(item, save);
-          const afford = save.pennies >= item.price;
-          const bought = justBought === item.id;
-          return (
-            <div key={item.id} style={{
-              display: 'flex', alignItems: 'center', gap: 12,
-              background: 'rgba(255,252,242,0.85)',
-              border: '1px solid rgba(180,140,70,0.35)',
-              borderRadius: 16, padding: 12,
-              boxShadow: bought ? '0 0 0 2px #d4aa60, 0 4px 14px rgba(200,150,40,0.4)' : '0 2px 8px rgba(0,0,0,0.08)',
-              transition: 'box-shadow 0.25s',
-            }}>
-              {/* Thumbnail placeholder */}
-              <div style={{
-                width: 54, height: 54, borderRadius: 12, flexShrink: 0,
-                background: item.thumb ? `url(${item.thumb}) center/cover` : 'repeating-linear-gradient(45deg,#e7d6ad,#e7d6ad 6px,#dcc89a 6px,#dcc89a 12px)',
-                border: '1px dashed rgba(140,100,50,0.4)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontSize: 9, color: '#9a7a4a', textAlign: 'center',
-              }}>
-                {!item.thumb && 'art\nTBD'}
-              </div>
-
-              {/* Text */}
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 15, color: '#5a3a1a', display: 'flex', alignItems: 'center', gap: 6 }}>
-                  {item.name}
-                  {owned && <span style={{
-                    fontSize: 10, color: '#6a8a4a', border: '1px solid #8aa86a',
-                    borderRadius: 8, padding: '1px 6px', fontStyle: 'italic',
-                  }}>owned</span>}
-                </div>
-                <div style={{ fontSize: 12, color: '#8a6f50', fontStyle: 'italic', marginTop: 2 }}>
-                  {item.description}
-                </div>
-              </div>
-
-              {/* Price / buy */}
-              {owned ? (
-                <span style={{ fontSize: 18, color: '#8aa86a' }}>✓</span>
-              ) : (
-                <button
-                  onPointerDown={() => handleBuy(item)}
-                  disabled={!afford}
-                  style={{
-                    flexShrink: 0,
-                    padding: '8px 12px', borderRadius: 12,
-                    border: '1.5px solid ' + (afford ? '#b8843c' : 'rgba(150,110,60,0.25)'),
-                    background: afford ? 'linear-gradient(135deg,#e8b45a,#c8862a)' : 'transparent',
-                    color: afford ? '#fff8e7' : 'rgba(140,110,70,0.55)',
-                    fontFamily: 'Georgia, serif', fontSize: 13, fontWeight: 'bold',
-                    cursor: afford ? 'pointer' : 'default',
-                    WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation',
-                    whiteSpace: 'nowrap',
-                  }}
-                >
-                  🪙 {item.price}
-                </button>
-              )}
-            </div>
-          );
-        })}
+        {tab === 'projects' && <ProjectsTab save={save} updateSave={updateSave} now={now} flash={flash} justBought={justBought} />}
+        {tab === 'pets' && <PetsTab save={save} updateSave={updateSave} now={now} flash={flash} justBought={justBought} />}
+        {tab === 'rooms' && <RoomsTab />}
+        {tab === 'cosmetics' && <CosmeticsTab save={save} updateSave={updateSave} flash={flash} justBought={justBought} />}
       </div>
     </div>
   );
+}
+
+// ── Projects: mirrors the room's next project ─────────────────────────────────
+function ProjectsTab({ save, updateSave, now, flash, justBought }) {
+  const project = nextProject(save);
+  const active = save.activeProject;
+  const done = save.roomStateIndex;
+
+  if (!project) {
+    return (
+      <Card>
+        <div style={{ fontSize: 26, marginBottom: 4 }}>🏡</div>
+        <div style={{ fontSize: 15, color: '#5a3a1a' }}>The room is complete.</div>
+        <div style={{ fontSize: 12.5, color: '#8a6f50', fontStyle: 'italic', marginTop: 4 }}>
+          Not a house anymore. Home.
+        </div>
+      </Card>
+    );
+  }
+
+  const building = active && active.id === project.id && now < active.completesAt;
+  const ready = active && active.id === project.id && now >= active.completesAt;
+  const afford = save.pennies >= project.cost;
+
+  return (
+    <>
+      <div style={{ fontSize: 12, color: '#8a6f50', fontStyle: 'italic', textAlign: 'center' }}>
+        {done} of {PROJECTS.length} projects complete
+      </div>
+      <Card highlight={justBought === project.id}>
+        <div style={{ fontSize: 16, color: '#5a3a1a', marginBottom: 4 }}>{project.name}</div>
+        <div style={{ fontSize: 12.5, color: '#8a6f50', fontStyle: 'italic', marginBottom: 12, lineHeight: 1.45 }}>
+          {project.teaser}
+        </div>
+        {ready ? (
+          <div style={{ fontSize: 13.5, color: '#b8843c', fontWeight: 'bold' }}>
+            ✨ It’s ready — go see it in the room
+          </div>
+        ) : building ? (
+          <div style={{ fontSize: 13, color: '#7a5430' }}>
+            🧰 Underway — ready in {formatDuration(Math.max(0, active.completesAt - now))}
+          </div>
+        ) : (
+          <button
+            onPointerDown={() => {
+              if (!afford || active) return;
+              updateSave(s => beginProject(s, project));
+              flash(project.id);
+            }}
+            disabled={!afford}
+            style={buyBtn(afford)}
+          >
+            {afford ? `🪙 ${project.cost} · takes ${formatDuration(project.durationMs)}` : `🪙 ${project.cost} — a few more Pennies first`}
+          </button>
+        )}
+      </Card>
+    </>
+  );
+}
+
+// ── Pets: they arrive, they aren't bought ─────────────────────────────────────
+function PetsTab({ save, updateSave, now, flash, justBought }) {
+  return (
+    <>
+      {/* Boombox — already home */}
+      <Card>
+        <Row
+          emoji={PETS.boombox.emoji}
+          title="Boombox"
+          subtitle="Came with the house. Wouldn’t leave if you asked."
+          right={<span style={{ fontSize: 14, color: '#8aa86a' }}>home ✓</span>}
+        />
+      </Card>
+
+      {Object.values(PET_ARRIVALS).map(arr => {
+        const pet = PETS[arr.petId];
+        const st = save.pets[arr.petId];
+        const available = projectDone(save, arr.requiresProject);
+        const arriving = !!st?.arrivesAt && !st.unlocked;
+        const home = !!st?.unlocked;
+        const afford = save.pennies >= arr.price;
+
+        let right;
+        if (home) {
+          right = <span style={{ fontSize: 14, color: '#8aa86a' }}>home ✓</span>;
+        } else if (arriving) {
+          right = (
+            <span style={{ fontSize: 12, color: '#a07a40', fontStyle: 'italic' }}>
+              on the way… {formatDuration(Math.max(1000, st.arrivesAt - now))}
+            </span>
+          );
+        } else if (available) {
+          right = (
+            <button
+              onPointerDown={() => {
+                if (!afford) return;
+                updateSave(s => ({
+                  ...s,
+                  pennies: s.pennies - arr.price,
+                  pets: { ...s.pets, [arr.petId]: { ...s.pets[arr.petId], arrivesAt: Date.now() + arr.arrivalMs } },
+                }));
+                flash(arr.petId);
+              }}
+              disabled={!afford}
+              style={buyBtn(afford)}
+            >
+              🪙 {arr.price}
+            </button>
+          );
+        }
+
+        return (
+          <Card key={arr.petId} highlight={justBought === arr.petId}>
+            <Row
+              emoji={available || home || arriving ? pet.emoji : '🌫️'}
+              dim={!available && !home && !arriving}
+              title={available || home || arriving ? arr.itemName : '???'}
+              subtitle={home
+                ? 'Settled in like they were always here.'
+                : arriving ? 'Small footsteps, getting closer.'
+                : available ? arr.teaser
+                : arr.lockedHint}
+              right={right}
+            />
+          </Card>
+        );
+      })}
+    </>
+  );
+}
+
+// ── Rooms: the kitchen waits ──────────────────────────────────────────────────
+function RoomsTab() {
+  return (
+    <>
+      <Card>
+        <Row emoji="🛋️" title="The Living Room" subtitle="Where it all started." right={<span style={{ fontSize: 14, color: '#8aa86a' }}>✓</span>} />
+      </Card>
+      <Card dim>
+        <Row emoji="🍳" dim title="The Kitchen" subtitle="Coming soon." right={<span style={{ fontSize: 13 }}>🔒</span>} />
+      </Card>
+    </>
+  );
+}
+
+// ── Boards & Pieces (cosmetics) ───────────────────────────────────────────────
+function CosmeticsTab({ save, updateSave, flash, justBought }) {
+  return SHOP_ITEMS.map(item => {
+    const owned = isOwned(item, save);
+    const afford = save.pennies >= item.price;
+    return (
+      <Card key={item.id} highlight={justBought === item.id}>
+        <Row
+          emoji="🎲"
+          title={item.name}
+          subtitle={item.description}
+          right={owned
+            ? <span style={{ fontSize: 18, color: '#8aa86a' }}>✓</span>
+            : (
+              <button
+                onPointerDown={() => {
+                  if (owned || !afford) return;
+                  updateSave(s => applyPurchase(s, item));
+                  flash(item.id);
+                }}
+                disabled={!afford}
+                style={buyBtn(afford)}
+              >
+                🪙 {item.price}
+              </button>
+            )}
+        />
+      </Card>
+    );
+  });
+}
+
+// ── Shared bits ───────────────────────────────────────────────────────────────
+
+function Card({ children, highlight = false, dim = false }) {
+  return (
+    <div style={{
+      background: 'rgba(255,252,242,0.85)',
+      border: '1px solid rgba(180,140,70,0.35)',
+      borderRadius: 16, padding: 14,
+      opacity: dim ? 0.65 : 1,
+      boxShadow: highlight ? '0 0 0 2px #d4aa60, 0 4px 14px rgba(200,150,40,0.4)' : '0 2px 8px rgba(0,0,0,0.08)',
+      transition: 'box-shadow 0.25s',
+      textAlign: 'center',
+    }}>
+      {children}
+    </div>
+  );
+}
+
+function Row({ emoji, title, subtitle, right, dim = false }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 12, textAlign: 'left' }}>
+      <div style={{
+        width: 46, height: 46, borderRadius: 12, flexShrink: 0,
+        background: 'rgba(230,210,160,0.5)', border: '1px solid rgba(140,100,50,0.25)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        fontSize: 24, opacity: dim ? 0.45 : 1, filter: dim ? 'grayscale(0.7)' : 'none',
+      }}>
+        {emoji}
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 14.5, color: '#5a3a1a' }}>{title}</div>
+        <div style={{ fontSize: 12, color: '#8a6f50', fontStyle: 'italic', marginTop: 2, lineHeight: 1.4 }}>
+          {subtitle}
+        </div>
+      </div>
+      {right}
+    </div>
+  );
+}
+
+function buyBtn(afford) {
+  return {
+    flexShrink: 0,
+    padding: '8px 12px', borderRadius: 12,
+    border: '1.5px solid ' + (afford ? '#b8843c' : 'rgba(150,110,60,0.25)'),
+    background: afford ? 'linear-gradient(135deg,#e8b45a,#c8862a)' : 'transparent',
+    color: afford ? '#fff8e7' : 'rgba(140,110,70,0.55)',
+    fontFamily: 'Georgia, serif', fontSize: 12.5, fontWeight: 'bold',
+    cursor: afford ? 'pointer' : 'default',
+    WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation',
+    whiteSpace: 'nowrap',
+  };
 }
 
 const backBtnStyle = {

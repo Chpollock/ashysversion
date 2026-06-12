@@ -1,4 +1,4 @@
-import { useState, useRef, useMemo } from 'react';
+import { useState, useRef, useMemo, useEffect } from 'react';
 import { reachableTargets, allLegalMoves } from '../game/gameLogic.js';
 import boards from '../game/boards/index.js';
 
@@ -49,22 +49,22 @@ function getImg(player, slotId, stackIdx, pieceImages, pieceSet = 'paper') {
 
 // ─── Position helpers — all coordinate math driven by board config ────────────
 
-// First N pieces stack normally; pieces beyond this compress tightly so they
-// "pile up" on top of the stack without extending further into the board.
-const STACK_NORMAL   = 5;
-const OVERFLOW_RATIO = 0.28; // overflow step = 28% of normal step (tight pile)
+// First N pieces stack normally; the 6th starts a SECOND LAYER back at the
+// base piece (like a real board): 6th sits on the 1st, 7th on the 2nd, etc.
+// Each layer is nudged along the stack direction so the piece underneath
+// peeks out, and higher stackIndex = higher zIndex, so layers read as piles.
+const STACK_NORMAL = 5;
+const LAYER_OFFSET = 0.45; // how far (in stack steps) each layer shifts inward
 
 function checkerPos(config, pointIndex, stackIndex) {
   const base     = config.points[pointIndex];
   const isBottom = pointIndex <= 11;
   const dir      = isBottom ? config.stackDirection.bottom : config.stackDirection.top;
+  const sign     = dir === 'up' ? -1 : 1;
 
-  // Accumulate dy piece-by-piece so normal and overflow steps can differ
-  let dy = 0;
-  for (let s = 1; s <= stackIndex; s++) {
-    const step = s < STACK_NORMAL ? config.stackStep : config.stackStep * OVERFLOW_RATIO;
-    dy += dir === 'up' ? -step : step;
-  }
+  const layer  = Math.floor(stackIndex / STACK_NORMAL);
+  const within = stackIndex % STACK_NORMAL;
+  const dy = sign * (within + layer * LAYER_OFFSET) * config.stackStep;
 
   return { x: base.x, y: base.y + dy };
 }
@@ -79,12 +79,26 @@ function barPos(config, player, stackIndex) {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export default function BackgammonBoard({ state, onSelectPiece, onMovePath, boardId = 'sharpie', pieceSet = 'paper', flashPoint = null, charlieTrail = [], hoverPoint = null }) {
+export default function BackgammonBoard({ state, onSelectPiece, onMovePath, onBlockedTap, boardId = 'sharpie', pieceSet = 'paper', flashPoint = null, charlieTrail = [], hoverPoint = null }) {
   const config = boards[boardId] ?? boards['sharpie'];
   const boardRef = useRef(null);
 
   const [calibTarget, setCalibTarget] = useState(0);
   const [cursorPx, setCursorPx] = useState(null);
+
+  // Brief shake on a checker that was tapped but can't move ('bar' or index).
+  // Cleared via effect so handlers stay ref-free.
+  const [nudgePoint, setNudgePoint] = useState(null);
+  useEffect(() => {
+    if (nudgePoint === null) return;
+    const t = setTimeout(() => setNudgePoint(null), 380);
+    return () => clearTimeout(t);
+  }, [nudgePoint]);
+
+  // Drag-to-move: { from, x, y, startX, startY, moved } — coords in board %.
+  // Pure state: pointerdown is a discrete event, so React has flushed it
+  // before pointerup runs — the render closure is always current enough.
+  const [drag, setDrag] = useState(null);
 
   const { points, bar, borneOff, selectedPoint, currentPlayer, phase, pieceImages } = state;
 
@@ -101,7 +115,16 @@ export default function BackgammonBoard({ state, onSelectPiece, onMovePath, boar
     return reachableTargets(state, selectedPoint);
   }, [state, selectedPoint, phase, currentPlayer]);
 
-  const destinations = [...reachable.keys()];
+  // Same map, but for the checker currently being dragged
+  const dragFrom = drag?.from ?? null;
+  const dragReachable = useMemo(() => {
+    if (dragFrom === null || phase !== 'moving' || currentPlayer !== 'ashton') return new Map();
+    return reachableTargets(state, dragFrom);
+  }, [state, dragFrom, phase, currentPlayer]);
+
+  // Destination dots follow whichever interaction is live: drag beats selection
+  const activeReachable = drag?.moved ? dragReachable : reachable;
+  const destinations = [...activeReachable.keys()];
 
   // ── Calibration ───────────────────────────────────────────────────────────
   function handleCalibrationTap(e) {
@@ -120,15 +143,96 @@ export default function BackgammonBoard({ state, onSelectPiece, onMovePath, boar
   }
 
   // ── Game interactions ─────────────────────────────────────────────────────
+
+  // Tapped one of Ashton's own checkers that has no legal move right now —
+  // shake it briefly and let the parent show a hint about why.
+  function nudge(point) {
+    onBlockedTap?.(point);
+    setNudgePoint(point);
+  }
+
   function handlePointTap(i) {
     if (CALIBRATION_MODE || phase !== 'moving' || currentPlayer !== 'ashton') return;
-    if (selectedPoint !== null && reachable.has(i)) moveTo(i);
-    else onSelectPiece(i);
+    if (selectedPoint !== null && reachable.has(i)) return moveTo(i);
+    if (points[i].player === 'ashton' && selectedPoint !== i && !moveableSources.has(i)) return nudge(i);
+    onSelectPiece(i);
   }
   function handleBarTap() {
     if (CALIBRATION_MODE || phase !== 'moving' || currentPlayer !== 'ashton') return;
-    if (selectedPoint !== null && reachable.has('off')) moveTo('off');
-    else onSelectPiece('bar');
+    if (selectedPoint !== null && reachable.has('off')) return moveTo('off');
+    if (bar.ashton > 0 && selectedPoint !== 'bar' && !moveableSources.has('bar')) return nudge('bar');
+    onSelectPiece('bar');
+  }
+
+  // ── Drag-to-move ──────────────────────────────────────────────────────────
+  // Press a checker and slide it to a destination dot; a press without movement
+  // falls back to the tap flow above. Pointer capture keeps the events on the
+  // checker for the whole gesture.
+
+  function pointerPct(e) {
+    // Checkers are absolutely positioned, so their offsetParent is the board
+    // container — no ref needed inside render-time handlers.
+    const rect = e.currentTarget.offsetParent?.getBoundingClientRect();
+    if (!rect || !rect.width || !rect.height) return null;
+    return {
+      x: ((e.clientX - rect.left) / rect.width) * 100,
+      y: ((e.clientY - rect.top) / rect.height) * 100,
+    };
+  }
+
+  function startDrag(e, from) {
+    if (CALIBRATION_MODE || phase !== 'moving' || currentPlayer !== 'ashton') return;
+    const p = pointerPct(e);
+    if (!p) return;
+    try { e.currentTarget.setPointerCapture?.(e.pointerId); } catch { /* tap still works without capture */ }
+    setDrag({ from, x: p.x, y: p.y, startX: p.x, startY: p.y, moved: false });
+  }
+
+  function moveDrag(e) {
+    const p = pointerPct(e);
+    if (!p) return;
+    setDrag(d => d && {
+      ...d, x: p.x, y: p.y,
+      moved: d.moved || Math.hypot(p.x - d.startX, p.y - d.startY) > 2.5,
+    });
+  }
+
+  // Nearest droppable destination: tight on x (points are columns), generous on
+  // which half of the board the pointer is in.
+  function dropTarget(x, y, reach) {
+    let best = null;
+    let bestD = Infinity;
+    for (const key of reach.keys()) {
+      const pos = key === 'off' ? config.bearOff.ashton : config.points[key];
+      if (key !== 'off') {
+        const isBottom = key <= 11;
+        if (isBottom ? y < 38 : y > 62) continue; // wrong half entirely
+      }
+      const d = Math.abs(x - pos.x);
+      if (d < bestD) { bestD = d; best = key; }
+    }
+    return bestD <= cs * 1.3 ? best : null;
+  }
+
+  function endDrag(tapFallback) {
+    const d = drag;
+    setDrag(null);
+    if (!d) return;
+
+    if (!d.moved) return tapFallback();          // it was a tap
+
+    const reach = phase === 'moving' && currentPlayer === 'ashton'
+      ? reachableTargets(state, d.from)
+      : new Map();
+    if (reach.size === 0) return nudge(d.from);  // dragged a stuck checker
+
+    const dest = dropTarget(d.x, d.y, reach);
+    const steps = dest != null ? reach.get(dest) : null;
+    if (steps) onMovePath(steps);                // otherwise it snaps back
+  }
+
+  function cancelDrag() {
+    setDrag(null);
   }
   function handleBearOffTap() {
     if (CALIBRATION_MODE || phase !== 'moving' || currentPlayer !== 'ashton') return;
@@ -252,7 +356,12 @@ export default function BackgammonBoard({ state, onSelectPiece, onMovePath, boar
                 zOrder={si}
                 canMove={canMove && isTop}
                 isFlashing={flashPoint === i && isTop}
-                onTap={() => handlePointTap(i)}
+                isNudging={nudgePoint === i && isTop}
+                isGhost={drag?.moved && drag.from === i && isTop}
+                onDragStart={(e) => startDrag(e, i)}
+                onDragMove={moveDrag}
+                onDragEnd={() => endDrag(() => handlePointTap(i))}
+                onDragCancel={cancelDrag}
                 interactive={!CALIBRATION_MODE && phase === 'moving' && currentPlayer === 'ashton' && pt.player === 'ashton'}
               />
             );
@@ -270,7 +379,7 @@ export default function BackgammonBoard({ state, onSelectPiece, onMovePath, boar
               position: 'absolute',
               left: `${base.x}%`, top: `${badgeY}%`,
               transform: 'translate(-50%, -50%)',
-              zIndex: 25, pointerEvents: 'none',
+              zIndex: 32, pointerEvents: 'none',
               width: 16, height: 16, borderRadius: '50%',
               background: 'rgba(55,30,8,0.88)',
               color: '#f5e8c0',
@@ -295,7 +404,12 @@ export default function BackgammonBoard({ state, onSelectPiece, onMovePath, boar
               zOrder={i}
               canMove={moveableSources.has('bar') && selectedPoint !== 'bar' && isTop}
               isFlashing={false}
-              onTap={handleBarTap}
+              isNudging={nudgePoint === 'bar' && isTop}
+              isGhost={drag?.moved && drag.from === 'bar' && isTop}
+              onDragStart={(e) => startDrag(e, 'bar')}
+              onDragMove={moveDrag}
+              onDragEnd={() => endDrag(handleBarTap)}
+              onDragCancel={cancelDrag}
               interactive={!CALIBRATION_MODE && phase === 'moving' && currentPlayer === 'ashton'}
             />
           );
@@ -315,6 +429,36 @@ export default function BackgammonBoard({ state, onSelectPiece, onMovePath, boar
         {/* Borne-off counters */}
         {borneOff.ashton  > 0 && <BorneOffPile count={borneOff.ashton}  x={config.bearOff.ashton.x}  y={config.bearOff.ashton.y}  player="ashton"  cs={cs} />}
         {borneOff.charlie > 0 && <BorneOffPile count={borneOff.charlie} x={config.bearOff.charlie.x} y={config.bearOff.charlie.y} player="charlie" cs={cs} />}
+
+        {/* The checker in flight while dragging */}
+        {drag?.moved && (() => {
+          const slotId = drag.from === 'bar' ? 24 : drag.from;
+          const stackIdx = drag.from === 'bar'
+            ? Math.max(0, bar.ashton - 1)
+            : Math.max(0, (points[drag.from]?.count ?? 1) - 1);
+          const img = getImg('ashton', slotId, stackIdx, pieceImages, pieceSet);
+          const lift = '0 8px 20px rgba(0,0,0,0.35), 0 0 0 3px rgba(240,192,64,0.7)';
+          return (
+            <div style={{
+              position: 'absolute', left: `${drag.x}%`, top: `${drag.y}%`,
+              width: `${cs}%`, paddingTop: `${cs}%`,
+              transform: 'translate(-50%,-50%) scale(1.18)',
+              zIndex: 70, pointerEvents: 'none',
+            }}>
+              {img ? (
+                <img src={img} draggable={false} style={{
+                  position: 'absolute', inset: 0, width: '100%', height: '100%',
+                  borderRadius: '50%', boxShadow: lift,
+                }} />
+              ) : (
+                <div style={{
+                  position: 'absolute', inset: 0, borderRadius: '50%',
+                  background: '#e8d9b8', border: '2px solid rgba(0,0,0,0.2)', boxShadow: lift,
+                }} />
+              )}
+            </div>
+          );
+        })()}
 
         {/* Point tap targets (triangle areas) */}
         {!CALIBRATION_MODE && Array.from({ length: 24 }).map((_, i) => {
@@ -340,7 +484,7 @@ export default function BackgammonBoard({ state, onSelectPiece, onMovePath, boar
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
-function Checker({ x, y, cs, player, img, selected, isTopmost, zOrder = 0, canMove = false, isFlashing = false, onTap, interactive }) {
+function Checker({ x, y, cs, player, img, selected, isTopmost, zOrder = 0, canMove = false, isFlashing = false, isNudging = false, isGhost = false, onDragStart, onDragMove, onDragEnd, onDragCancel, interactive }) {
   // Box shadow: priority — selected > flashing > default
   let innerShadow;
   if (selected) {
@@ -351,24 +495,35 @@ function Checker({ x, y, cs, player, img, selected, isTopmost, zOrder = 0, canMo
     innerShadow = '0 1px 4px rgba(0,0,0,0.25)';
   }
 
-  // Animation priority: flash (brief, happening now) > moveable glow
-  const glowAnim = isFlashing
+  // Animation priority: nudge (can't move) > flash (happening now) > moveable glow
+  const glowAnim = isNudging
+    ? 'checkerNudge 0.35s ease-in-out'
+    : isFlashing
     ? 'pieceFlash 0.9s ease-out forwards'
     : canMove && !selected
     ? 'moveableGlow 2.4s ease-in-out infinite'
     : 'none';
 
+  const draggable = interactive && isTopmost;
   return (
     <div
-      onPointerDown={interactive && isTopmost ? (e) => { e.stopPropagation(); onTap(); } : undefined}
+      onPointerDown={draggable ? (e) => { e.stopPropagation(); onDragStart?.(e); } : undefined}
+      onPointerMove={draggable ? onDragMove : undefined}
+      onPointerUp={draggable ? (e) => { e.stopPropagation(); onDragEnd?.(e); } : undefined}
+      onPointerCancel={draggable ? onDragCancel : undefined}
       style={{
         position: 'absolute', left: `${x}%`, top: `${y}%`,
         width: `${cs}%`, paddingTop: `${cs}%`,
         transform: `translate(-50%,-50%)${selected ? ' translateY(-6px) scale(1.08)' : ''}`,
         transition: 'transform 0.15s ease',
-        zIndex: selected ? 50 : 4 + zOrder,
-        cursor: interactive && isTopmost ? 'pointer' : 'default',
+        // Above the point tap zones (z 8) so a press picks the checker up
+        // immediately — no select-first needed before dragging.
+        zIndex: selected ? 50 : 12 + zOrder,
+        cursor: draggable ? 'grab' : 'default',
         pointerEvents: isTopmost ? 'auto' : 'none',
+        // Stop the page scrolling while a checker is being dragged on touch
+        touchAction: draggable ? 'none' : undefined,
+        opacity: isGhost ? 0.35 : 1,
       }}
     >
       {img ? (
@@ -392,15 +547,16 @@ function Checker({ x, y, cs, player, img, selected, isTopmost, zOrder = 0, canMo
 }
 
 function DestDot({ x, y, cs, onTap }) {
-  const d = cs * 0.6;
+  const d = cs * 0.8;
   return (
     <div onPointerDown={(e) => { e.stopPropagation(); onTap(); }}
       style={{
         position: 'absolute', left: `${x}%`, top: `${y}%`,
         width: `${d}%`, paddingTop: `${d}%`,
-        transform: 'translate(-50%,-50%)', zIndex: 14, cursor: 'pointer',
-        borderRadius: '50%', background: 'rgba(230,180,60,0.65)',
-        boxShadow: '0 0 14px rgba(230,180,60,0.8)',
+        transform: 'translate(-50%,-50%)', zIndex: 22, cursor: 'pointer',
+        borderRadius: '50%', background: 'rgba(240,185,50,0.9)',
+        border: '2.5px solid rgba(255,250,225,0.95)',
+        boxShadow: '0 0 16px rgba(240,185,50,0.95), 0 2px 6px rgba(90,50,10,0.35)',
         animation: 'pulse 1.2s ease-in-out infinite', pointerEvents: 'auto',
       }} />
   );

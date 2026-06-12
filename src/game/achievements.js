@@ -49,6 +49,9 @@ export const ACHIEVEMENTS = [
   { id: 'gammon', name: 'Shut Out', category: 'skill', reward: 50,
     description: 'Win a gammon — Charlie bears off nothing.',
     test: c => c.result === 'win' && hasEvent(c.eventLog, EV.GAMMON_WON, 'ashton') },
+  { id: 'backgammon', name: 'Didn’t Even Make It Home', category: 'skill', reward: 75,
+    description: 'Win a backgammon — Charlie still stuck in your home board.',
+    test: c => c.result === 'win' && hasEvent(c.eventLog, EV.BACKGAMMON_WON, 'ashton') },
   { id: 'five_hits', name: 'Bar Fight', category: 'skill', reward: 30,
     description: 'Send 5 of Charlie’s pieces to the bar in one game.',
     test: c => hasEvent(c.eventLog, EV.FIVE_PLUS_HITS, 'ashton') },
@@ -77,6 +80,9 @@ export const ACHIEVEMENTS = [
   { id: 'got_gammoned', name: 'We Don’t Talk About That One', category: 'luck', reward: 20,
     description: 'Lose a gammon. It happens. We move on.',
     test: c => c.result === 'loss' && hasEvent(c.eventLog, EV.GAMMON_WON, 'charlie') },
+  { id: 'got_backgammoned', name: 'A Collector’s Item', category: 'luck', reward: 30,
+    description: 'Lose a full backgammon. Frame it — it’s rare.',
+    test: c => c.result === 'loss' && hasEvent(c.eventLog, EV.BACKGAMMON_WON, 'charlie') },
   { id: 'pincushion', name: 'Pincushion', category: 'luck', reward: 15,
     description: 'Get 4+ of your pieces sent to the bar in one game.',
     test: c => countEvents(c.eventLog, EV.GOT_HIT, 'ashton') >= 4 },
@@ -102,12 +108,28 @@ export const ACHIEVEMENTS = [
     test: c => c.statsAfter.gamesPlayedToday >= 5 },
 ];
 
-// Returns the achievement objects newly unlocked by this game (not already in unlockedIds).
-export function evaluateAchievements(ctx, unlockedIds = []) {
-  const unlocked = new Set(unlockedIds);
+// Trinket look for the type-tray viewer, by category
+export const CATEGORY_EMOJI = {
+  milestone: '🏅',
+  streak: '🔥',
+  comeback: '🌅',
+  skill: '🎯',
+  luck: '🍀',
+  silly: '🪿',
+};
+
+export function trinketEmoji(achievement) {
+  return CATEGORY_EMOJI[achievement.category] ?? '🏆';
+}
+
+// Returns the achievement objects newly unlocked by this game.
+// `unlocked` is the save's achievement record: either the current map form
+// { id: unlockedAt } or the legacy array of ids.
+export function evaluateAchievements(ctx, unlocked = {}) {
+  const have = new Set(Array.isArray(unlocked) ? unlocked : Object.keys(unlocked));
   const newly = [];
   for (const a of ACHIEVEMENTS) {
-    if (unlocked.has(a.id)) continue;
+    if (have.has(a.id)) continue;
     try {
       if (a.test(ctx)) newly.push(a);
     } catch {

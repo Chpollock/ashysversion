@@ -42,12 +42,13 @@ export const PETS = {
     placeholderColor: '#a8794a',
     relocateChance: 0.12,   // relocates least — a calm, steady presence
     awayChance: 0.02,
-    homeSpot: 'rug',
+    homeSpot: 'byLamp',
     tapReactions: ['🐾', '💤', '❤️'],
     spots: [
-      { id: 'rug',      position: { x: 46, y: 76 }, zOrder: 5, pose: null, weight: 8 },
+      // minRoomState: spot exists only once that many projects are complete
+      { id: 'rug',      position: { x: 46, y: 76 }, zOrder: 5, pose: null, weight: 8, minRoomState: 7 },
       { id: 'byLamp',   position: { x: 14, y: 58 }, zOrder: 5, pose: null, weight: 4 },
-      { id: 'armchair', position: { x: 66, y: 62 }, zOrder: 5, pose: null, weight: 3 },
+      { id: 'armchair', position: { x: 66, y: 62 }, zOrder: 5, pose: null, weight: 3, minRoomState: 8 },
     ],
   },
 
@@ -62,18 +63,53 @@ export const PETS = {
     tapReactions: ['✨', '🐹', '❤️'],
     spots: [
       { id: 'shelf',     position: { x: 60, y: 22 }, zOrder: 7, pose: null, weight: 3 },
-      { id: 'rugEdge',   position: { x: 38, y: 80 }, zOrder: 7, pose: null, weight: 3 },
+      { id: 'rugEdge',   position: { x: 38, y: 80 }, zOrder: 7, pose: null, weight: 3, minRoomState: 7 },
       { id: 'windowsill',position: { x: 30, y: 26 }, zOrder: 7, pose: null, weight: 2 },
       { id: 'underBox',  position: { x: 50, y: 72 }, zOrder: 7, pose: null, weight: 2 },
-      { id: 'lampBase',  position: { x: 12, y: 64 }, zOrder: 7, pose: null, weight: 2 },
+      { id: 'lampBase',  position: { x: 12, y: 64 }, zOrder: 7, pose: null, weight: 2, minRoomState: 10 },
       { id: 'farCorner', position: { x: 88, y: 70 }, zOrder: 7, pose: null, weight: 2 },
     ],
+  },
+};
+
+// ── Pets arrive — they aren't bought ─────────────────────────────────────────
+// Each pet becomes AVAILABLE once a project is complete, is invited via a
+// preparation purchase, takes a short real-time arrival, then walks in with a
+// small moment and joins the spot system for good.
+const ARRIVAL_MIN = 60 * 1000;
+
+export const PET_ARRIVALS = {
+  remy: {
+    petId: 'remy',
+    itemName: 'Remy’s Homecoming',
+    price: 300,
+    requiresProject: 'floors',
+    teaser: 'The floors are clear now. Someone small has been waiting to map them.',
+    lockedHint: 'Someone’s waiting until the floors are safe…',
+    arrivalMs: 2 * ARRIVAL_MIN,
+    arrivalLine: 'Remy pads in, nose first. He checks every corner, then picks his spot like he’s always known it.',
+  },
+  hammy: {
+    petId: 'hammy',
+    itemName: 'Hammy Moves In',
+    price: 400,
+    requiresProject: 'couch',
+    teaser: 'He’s been coming by after work. He’d like to stay.',
+    lockedHint: 'He visits after work. He’s waiting for somewhere to sit…',
+    arrivalMs: 2 * ARRIVAL_MIN,
+    arrivalLine: 'Hammy moves in with one tiny bag. He’s already rearranging things.',
   },
 };
 
 // Lookup a pet's spot definition
 export function getSpot(petId, spotId) {
   return PETS[petId]?.spots.find(s => s.id === spotId) || null;
+}
+
+// Spots that exist in the current room state (minRoomState gating)
+function eligibleSpots(def, roomStateIndex) {
+  const pool = def.spots.filter(s => (s.minRoomState ?? 0) <= roomStateIndex);
+  return pool.length ? pool : [def.spots[0]]; // never strand a pet without a spot
 }
 
 // Weighted random spot pick. excludeId avoids picking the spot the pet is already on
@@ -113,14 +149,25 @@ export function relocatePets(save, reason, now = Date.now()) {
     });
   }
 
+  const roomStateIndex = save.roomStateIndex ?? 0;
+
   for (const petId of Object.keys(PETS)) {
     const def = PETS[petId];
     const cur = save.pets[petId];
     if (!cur?.unlocked) continue;
 
-    // First placement — drop into the home spot, no relocation/gift
+    const spots = eligibleSpots(def, roomStateIndex);
+
+    // First placement — drop into the home spot (or first eligible), no gift
     if (!cur.spotId) {
-      pets[petId] = { ...cur, spotId: def.homeSpot, away: false };
+      const home = spots.find(s => s.id === def.homeSpot) ?? spots[0];
+      pets[petId] = { ...cur, spotId: home.id, away: false };
+      continue;
+    }
+
+    // If the room changed under the pet (spot no longer eligible), move it
+    if (!spots.some(s => s.id === cur.spotId)) {
+      pets[petId] = { ...cur, spotId: pickWeightedSpot(spots, null).id, away: false };
       continue;
     }
 
@@ -132,7 +179,7 @@ export function relocatePets(save, reason, now = Date.now()) {
     // Away pets roll to come back
     if (cur.away) {
       if (Math.random() < chance) {
-        const back = pickWeightedSpot(def.spots, null);
+        const back = pickWeightedSpot(spots, null);
         pets[petId] = { ...cur, spotId: back.id, away: false };
       }
       continue;
@@ -150,7 +197,7 @@ export function relocatePets(save, reason, now = Date.now()) {
     }
 
     // Relocate to a new weighted spot, maybe leaving a gift behind
-    const next = pickWeightedSpot(def.spots, cur.spotId);
+    const next = pickWeightedSpot(spots, cur.spotId);
     pets[petId] = { ...cur, spotId: next.id, away: false };
     maybeLeaveGift(petId, fromSpot);
   }

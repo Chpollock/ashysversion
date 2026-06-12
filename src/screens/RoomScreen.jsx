@@ -1,33 +1,39 @@
 import { useState, useEffect, useRef } from 'react';
-import roomImg from '../assets/living-room-start.png';
-import { REPAIRS, FURNITURE_BY_ID, FIXTURES } from '../game/roomItems.js';
-import { PETS, getSpot } from '../game/petSpots.js';
+import {
+  PROJECTS, nextProject, beginProject, roomImageForState, boardHotspotForState,
+  BAKED_PETS_UP_TO, TYPE_TRAY, TRAY_UNLOCK_INDEX, SONG_GIFT, JAR_FULL_AT, formatDuration,
+} from '../game/roomStates.js';
+import { PETS, PET_ARRIVALS, getSpot } from '../game/petSpots.js';
+import { ACHIEVEMENTS, trinketEmoji } from '../game/achievements.js';
 
 const PET_TAP_COOLDOWN_MS = 1200;
 
-// Repair status helper. Returns 'none' | 'fixing' | 'ready' | 'done'.
-function repairStatus(save, id, now) {
-  const state = save.room.livingRoom.repairs[id];
-  if (state === 'done') return 'done';
-  if (state === 'in-progress') {
-    const t = save.room.livingRoom.repairTimers[id];
-    return t && now >= t ? 'ready' : 'fixing';
-  }
-  return 'none';
-}
-
 export default function RoomScreen({
-  save, updateSave, onEnterGame, onOpenShop,
+  save, updateSave, onEnterGame, onOpenShop, onPlayLyricsOnce,
   muted, onToggleMute, welcomeBack,
 }) {
   const [now, setNow] = useState(() => Date.now());
-  const [repairCardId, setRepairCardId] = useState(null); // open repair card
-  const [revealing, setRevealing] = useState({});         // { id: true } during reveal anim
+  const [projectCardOpen, setProjectCardOpen] = useState(false);
+  const [revealFlash, setRevealFlash] = useState(false);
+  const [revealLine, setRevealLine] = useState(null);     // { text, key }
+  const [arrival, setArrival] = useState(null);           // { name, line, key }
+  const [trayOpen, setTrayOpen] = useState(false);
+  const [trayDetail, setTrayDetail] = useState(null);     // achievement id
+  const [songCardOpen, setSongCardOpen] = useState(false);
   const [petReactions, setPetReactions] = useState({});   // { petId: { emoji, key } }
   const [showWelcome, setShowWelcome] = useState(welcomeBack);
+  const [coinDrop, setCoinDrop] = useState(null);         // key, retriggers the coin anim
   const petTapCooldown = useRef({});                      // { petId: lastTapTs }
+  const prevPenniesRef = useRef(save.pennies);
 
-  // Tick once a second so "fixing" timers flip to "ready" live (no reload needed)
+  const roomStateIndex = save.roomStateIndex ?? 0;
+  const project = nextProject(save);
+  const active = save.activeProject;
+  const building = !!active && project && active.id === project.id && now < active.completesAt;
+  const ready = !!active && project && active.id === project.id && now >= active.completesAt;
+  const board = boardHotspotForState(roomStateIndex);
+
+  // Tick once a second so build timers and pet arrivals flip live
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
@@ -40,55 +46,97 @@ export default function RoomScreen({
     return () => clearTimeout(t);
   }, [welcomeBack]);
 
-  // ── Actions ────────────────────────────────────────────────────────────────
-  function startRepair(item) {
-    if (save.pennies < item.price) return;
-    updateSave(s => ({
-      ...s,
-      pennies: s.pennies - item.price,
-      room: {
-        ...s.room,
-        livingRoom: {
-          ...s.room.livingRoom,
-          repairs: { ...s.room.livingRoom.repairs, [item.id]: 'in-progress' },
-          repairTimers: { ...s.room.livingRoom.repairTimers, [item.id]: Date.now() + item.durationMs },
+  // Coin-drop animation whenever Pennies tick up while the room is visible
+  useEffect(() => {
+    if (save.pennies > prevPenniesRef.current) {
+      const t = setTimeout(() => setCoinDrop(Date.now()), 0);
+      prevPenniesRef.current = save.pennies;
+      return () => clearTimeout(t);
+    }
+    prevPenniesRef.current = save.pennies;
+  }, [save.pennies]);
+
+  // ── Pet arrivals: timer done → the pet walks in with a small moment ────────
+  useEffect(() => {
+    for (const petId of Object.keys(PET_ARRIVALS)) {
+      const p = save.pets[petId];
+      if (!p?.arrivesAt || p.unlocked || now < p.arrivesAt) continue;
+      const def = PETS[petId];
+      updateSave(s => ({
+        ...s,
+        pets: {
+          ...s.pets,
+          [petId]: { ...s.pets[petId], unlocked: true, welcomed: true, arrivesAt: null, spotId: def.homeSpot, away: false },
         },
-      },
-    }));
-    setRepairCardId(null);
+      }));
+      const t = setTimeout(() => setArrival({
+        name: def.name, line: PET_ARRIVALS[petId].arrivalLine, key: Date.now(),
+      }), 300);
+      return () => clearTimeout(t);
+    }
+  }, [now]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Auto-dismiss the arrival card
+  useEffect(() => {
+    if (!arrival) return;
+    const t = setTimeout(() => setArrival(null), 5200);
+    return () => clearTimeout(t);
+  }, [arrival]);
+
+  // ── Project actions ─────────────────────────────────────────────────────────
+  function handleBeginProject() {
+    if (!project || active || save.pennies < project.cost) return;
+    updateSave(s => beginProject(s, project));
+    setProjectCardOpen(false);
   }
 
-  // Tapping a "Ready!" hotspot — she witnesses the change here, never automatically
-  function completeRepair(item) {
-    updateSave(s => ({
-      ...s,
-      room: {
-        ...s.room,
-        livingRoom: {
-          ...s.room.livingRoom,
-          repairs: { ...s.room.livingRoom.repairs, [item.id]: 'done' },
-        },
-      },
-    }));
-    setRevealing(r => ({ ...r, [item.id]: true }));
-    setTimeout(() => setRevealing(r => ({ ...r, [item.id]: false })), 900);
-  }
-
-  // Tap a pet — heart + a small per-pet reaction, with a cooldown so it stays charming
-  function tapPet(petId) {
-    const last = petTapCooldown.current[petId] || 0;
-    if (Date.now() - last < PET_TAP_COOLDOWN_MS) return;
-    petTapCooldown.current[petId] = Date.now();
-    const reactions = PETS[petId].tapReactions;
-    const emoji = reactions[Math.floor(Math.random() * reactions.length)];
-    setPetReactions(r => ({ ...r, [petId]: { emoji, key: Date.now() } }));
+  // She taps the finished work — sparkle flash, then the room becomes new
+  function handleReveal() {
+    if (!ready || !project) return;
+    setRevealFlash(true);
+    setTimeout(() => setRevealFlash(false), 950);
     setTimeout(() => {
-      setPetReactions(r => {
-        const next = { ...r };
-        delete next[petId];
-        return next;
-      });
-    }, 1100);
+      updateSave(s => ({ ...s, roomStateIndex: s.roomStateIndex + 1, activeProject: null }));
+      setRevealLine({ text: project.revealLine, key: Date.now() });
+    }, 420);
+  }
+
+  useEffect(() => {
+    if (!revealLine) return;
+    const t = setTimeout(() => setRevealLine(null), 4200);
+    return () => clearTimeout(t);
+  }, [revealLine]);
+
+  // ── The song gift ───────────────────────────────────────────────────────────
+  const roomFinished = roomStateIndex >= PROJECTS.length;
+  function openSongGift() {
+    setSongCardOpen(true);
+    if (!save.music.lyricsUnlocked) {
+      updateSave(s => ({ ...s, music: { ...s.music, lyricsUnlocked: true } }));
+    }
+    onPlayLyricsOnce?.();
+  }
+
+  // ── Pets ────────────────────────────────────────────────────────────────────
+  function tapPet(petId) {
+    // Deferred a tick so the impure bits (time, randomness) run strictly in
+    // event-time, never during a render pass.
+    setTimeout(() => {
+      const ts = Date.now();
+      const last = petTapCooldown.current[petId] || 0;
+      if (ts - last < PET_TAP_COOLDOWN_MS) return;
+      petTapCooldown.current[petId] = ts;
+      const reactions = PETS[petId].tapReactions;
+      const emoji = reactions[Math.floor(Math.random() * reactions.length)];
+      setPetReactions(r => ({ ...r, [petId]: { emoji, key: ts } }));
+      setTimeout(() => {
+        setPetReactions(r => {
+          const next = { ...r };
+          delete next[petId];
+          return next;
+        });
+      }, 1100);
+    }, 0);
   }
 
   function collectGift(gift) {
@@ -100,12 +148,11 @@ export default function RoomScreen({
     }));
   }
 
-  const placedFurniture = save.room.livingRoom.furniture
-    .map(id => FURNITURE_BY_ID[id]).filter(Boolean);
-
-  // Pets currently in the room (unlocked, not away, placed at a known spot)
+  // Pets currently visible. Boombox is painted into the early room images, so
+  // his overlay only renders once the room moves past BAKED_PETS_UP_TO.
   const visiblePets = Object.keys(PETS)
     .map(petId => {
+      if (petId === 'boombox' && roomStateIndex <= BAKED_PETS_UP_TO) return null;
       const st = save.pets[petId];
       if (!st?.unlocked || st.away || !st.spotId) return null;
       const def = PETS[petId];
@@ -115,97 +162,43 @@ export default function RoomScreen({
     })
     .filter(Boolean);
 
+  const unlockedAch = save.achievements.unlocked ?? {};
+  const jarFill = Math.min(1, save.pennies / JAR_FULL_AT);
+
   return (
     <div style={{
       position: 'fixed', inset: 0, overflow: 'hidden',
       fontFamily: 'Georgia, serif', background: '#2a2018',
     }}>
       <style>{`
-        @keyframes roomReveal { 0% { opacity: 0; transform: scale(0.85); } 60% { opacity: 1; transform: scale(1.06); } 100% { opacity: 1; transform: scale(1); } }
-        @keyframes readyGlow { 0%,100% { box-shadow: 0 0 0 2px rgba(245,200,80,0.6), 0 0 16px rgba(245,200,80,0.5); } 50% { box-shadow: 0 0 0 3px rgba(245,200,80,0.9), 0 0 26px rgba(245,200,80,0.8); } }
-        @keyframes fixingPulse { 0%,100% { opacity: 0.5; } 50% { opacity: 0.85; } }
+        @keyframes boardGlow { 0%,100% { box-shadow: 0 0 0 2px rgba(245,210,120,0.12), 0 0 18px rgba(245,210,120,0.1); } 50% { box-shadow: 0 0 0 2px rgba(245,210,120,0.3), 0 0 26px rgba(245,210,120,0.25); } }
+        @keyframes hintMote { 0%,100% { opacity: 0.25; transform: translateY(0) scale(0.85); } 50% { opacity: 0.8; transform: translateY(-7px) scale(1.05); } }
+        @keyframes buildPulse { 0%,100% { opacity: 0.65; } 50% { opacity: 1; } }
+        @keyframes readyGlow { 0%,100% { box-shadow: 0 0 14px 4px rgba(245,200,80,0.45); opacity: 0.85; } 50% { box-shadow: 0 0 26px 9px rgba(245,200,80,0.8); opacity: 1; } }
+        @keyframes revealFlash { 0% { opacity: 0; } 35% { opacity: 1; } 100% { opacity: 0; } }
+        @keyframes revealLineIn { 0% { opacity: 0; transform: translate(-50%,8px); } 100% { opacity: 1; transform: translate(-50%,0); } }
+        @keyframes coinFall { 0% { opacity: 0; transform: translateY(-26px) rotate(-30deg); } 30% { opacity: 1; } 100% { opacity: 0; transform: translateY(8px) rotate(12deg); } }
         @keyframes floatHeart { 0% { opacity: 0; transform: translateY(0) scale(0.6); } 30% { opacity: 1; } 100% { opacity: 0; transform: translateY(-46px) scale(1.1); } }
         @keyframes giftBob { 0%,100% { transform: translate(-50%,0); } 50% { transform: translate(-50%,-6px); } }
         @keyframes welcomeIn { 0% { opacity: 0; transform: translate(-50%, -8px); } 100% { opacity: 1; transform: translate(-50%, 0); } }
         @keyframes petBreathe { 0%,100% { transform: translate(-50%,-50%) scale(1); } 50% { transform: translate(-50%,-50%) scale(1.015); } }
         @keyframes petTapPop { 0% { opacity: 0; transform: translate(-50%,0) scale(0.6); } 30% { opacity: 1; } 100% { opacity: 0; transform: translate(-50%,-40px) scale(1.1); } }
+        @keyframes presentGlow { 0%,100% { filter: drop-shadow(0 0 6px rgba(245,200,80,0.6)); } 50% { filter: drop-shadow(0 0 14px rgba(245,200,80,0.95)); } }
+        @keyframes arriveSparkle { 0% { opacity: 0; transform: translate(-50%,-50%) scale(0.5); } 40% { opacity: 1; transform: translate(-50%,-50%) scale(1.25); } 100% { opacity: 0; transform: translate(-50%,-50%) scale(1.6); } }
+        @keyframes cardIn { 0% { opacity: 0; transform: translateY(10px) scale(0.96); } 100% { opacity: 1; transform: translateY(0) scale(1); } }
       `}</style>
 
-      {/* Room image */}
-      <img src={roomImg} alt="living room" draggable={false}
+      {/* Room — the image IS the room state */}
+      <img src={roomImageForState(roomStateIndex)} alt="living room" draggable={false}
         style={{ width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center', display: 'block' }} />
 
-      {/* Placed furniture overlays */}
-      {placedFurniture.map(f => (
-        <Overlay key={f.id} overlay={f.overlay} label={f.name} />
-      ))}
-
-      {/* Completed repair overlays */}
-      {REPAIRS.map(item => {
-        if (repairStatus(save, item.id, now) !== 'done') return null;
-        return (
-          <div key={`done-${item.id}`} style={{
-            animation: revealing[item.id] ? 'roomReveal 0.9s ease-out' : 'none',
-          }}>
-            <Overlay overlay={item.overlay} label={`${item.name} (fixed)`} />
-          </div>
-        );
-      })}
-
-      {/* Repair hotspots */}
-      {REPAIRS.map(item => {
-        const status = repairStatus(save, item.id, now);
-        if (status === 'done') return null;
-        const h = item.hotspot;
-        const common = {
-          position: 'absolute', left: `${h.x}%`, top: `${h.y}%`,
-          width: `${h.w}%`, height: `${h.h}%`, borderRadius: 10,
-          cursor: 'pointer', WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation',
-          zIndex: 5,
-        };
-        if (status === 'none') {
-          return (
-            <div key={item.id} onPointerDown={() => setRepairCardId(item.id)} style={{
-              ...common,
-              background: 'rgba(120,40,30,0.28)',
-              border: '2px dashed rgba(160,60,40,0.7)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              fontSize: 10, color: '#fff', textShadow: '0 1px 3px rgba(0,0,0,0.6)',
-            }}>⚠</div>
-          );
-        }
-        if (status === 'fixing') {
-          return (
-            <div key={item.id} style={{
-              ...common, cursor: 'default',
-              background: 'rgba(80,90,120,0.3)',
-              border: '2px solid rgba(150,170,200,0.6)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              fontSize: 10, color: '#fff', textShadow: '0 1px 3px rgba(0,0,0,0.6)',
-              animation: 'fixingPulse 1.4s ease-in-out infinite',
-            }}>fixing…</div>
-          );
-        }
-        // ready
-        return (
-          <div key={item.id} onPointerDown={() => completeRepair(item)} style={{
-            ...common,
-            background: 'rgba(245,200,80,0.25)',
-            border: '2px solid rgba(245,200,80,0.9)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontSize: 11, color: '#fff8e0', fontWeight: 'bold', textShadow: '0 1px 3px rgba(0,0,0,0.6)',
-            animation: 'readyGlow 1.2s ease-in-out infinite',
-          }}>Ready!</div>
-        );
-      })}
-
-      {/* Game box hotspot */}
+      {/* The board — always tappable, always the way into the game */}
       <div onPointerDown={onEnterGame} style={{
         position: 'absolute',
-        left: `${FIXTURES.gameBox.hotspot.x}%`, top: `${FIXTURES.gameBox.hotspot.y}%`,
-        width: `${FIXTURES.gameBox.hotspot.w}%`, height: `${FIXTURES.gameBox.hotspot.h}%`,
-        cursor: 'pointer', zIndex: 6, WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation',
-        borderRadius: 12,
+        left: `${board.x}%`, top: `${board.y}%`, width: `${board.w}%`, height: `${board.h}%`,
+        cursor: 'pointer', zIndex: 6, borderRadius: 14,
+        WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation',
+        animation: 'boardGlow 3.2s ease-in-out infinite',
         display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
       }}>
         <span style={{
@@ -215,20 +208,96 @@ export default function RoomScreen({
         }}>Play ▸</span>
       </div>
 
-      {/* Pets — each at its current spot, breathing gently, tappable */}
+      {/* ── The next project's marker ── */}
+      {project && !ready && !building && (
+        <div onPointerDown={() => setProjectCardOpen(true)} style={{
+          position: 'absolute', left: `${project.hintPos.x}%`, top: `${project.hintPos.y}%`,
+          transform: 'translate(-50%,-50%)', zIndex: 7, cursor: 'pointer',
+          width: 44, height: 44,
+          WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }} aria-label={`Hint: ${project.name}`}>
+          {/* faint dust motes — diegetic, not a badge */}
+          {[0, 1, 2].map(i => (
+            <span key={i} style={{
+              position: 'absolute',
+              left: `${22 + i * 22}%`, top: `${30 + (i % 2) * 28}%`,
+              width: 5, height: 5, borderRadius: '50%',
+              background: 'rgba(255,240,190,0.9)',
+              animation: `hintMote ${2.4 + i * 0.5}s ease-in-out ${i * 0.4}s infinite`,
+            }} />
+          ))}
+          <span style={{ fontSize: 15, opacity: 0.65, animation: 'hintMote 3s ease-in-out infinite' }}>✨</span>
+        </div>
+      )}
+
+      {project && building && (
+        <div onPointerDown={() => setProjectCardOpen(true)} style={{
+          position: 'absolute', left: `${project.hintPos.x}%`, top: `${project.hintPos.y}%`,
+          transform: 'translate(-50%,-50%)', zIndex: 7, cursor: 'pointer',
+          display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2,
+          WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation',
+          animation: 'buildPulse 1.6s ease-in-out infinite',
+        }}>
+          <span style={{ fontSize: 24, filter: 'drop-shadow(0 2px 3px rgba(0,0,0,0.4))' }}>🧰</span>
+          <span style={{ fontSize: 13, marginTop: -6, opacity: 0.8 }}>💨</span>
+        </div>
+      )}
+
+      {project && ready && (
+        <div onPointerDown={handleReveal} style={{
+          position: 'absolute', left: `${project.hintPos.x}%`, top: `${project.hintPos.y}%`,
+          transform: 'translate(-50%,-50%)', zIndex: 7, cursor: 'pointer',
+          width: 38, height: 38, borderRadius: '50%',
+          background: 'radial-gradient(circle, rgba(255,235,170,0.95), rgba(245,200,80,0.5) 65%, transparent 75%)',
+          animation: 'readyGlow 1.3s ease-in-out infinite',
+          WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation',
+        }} aria-label="Reveal" />
+      )}
+
+      {/* Type tray — achievements viewer, once the gallery wall is complete */}
+      {roomStateIndex >= TRAY_UNLOCK_INDEX && (
+        <div onPointerDown={() => setTrayOpen(true)} style={{
+          position: 'absolute',
+          left: `${TYPE_TRAY.hotspot.x}%`, top: `${TYPE_TRAY.hotspot.y}%`,
+          width: `${TYPE_TRAY.hotspot.w}%`, height: `${TYPE_TRAY.hotspot.h}%`,
+          zIndex: 6, cursor: 'pointer', borderRadius: 8,
+          WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation',
+        }} aria-label="Achievements tray" />
+      )}
+
+      {/* The song gift — a present on the record player, once the room is home */}
+      {roomFinished && (
+        <div onPointerDown={openSongGift} style={{
+          position: 'absolute',
+          left: `${SONG_GIFT.hotspot.x}%`, top: `${SONG_GIFT.hotspot.y}%`,
+          transform: 'translate(-50%,-50%)', zIndex: 7, cursor: 'pointer',
+          fontSize: save.music.lyricsUnlocked ? 20 : 28,
+          animation: 'presentGlow 2.2s ease-in-out infinite',
+          WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation',
+        }} aria-label="A present">
+          {save.music.lyricsUnlocked ? '💝' : '🎁'}
+        </div>
+      )}
+
+      {/* Pets */}
       {visiblePets.map(({ petId, def, spot }) => (
-        <Pet
-          key={petId}
-          def={def}
-          spot={spot}
-          reaction={petReactions[petId]}
-          onTap={() => tapPet(petId)}
-        />
+        <Pet key={petId} def={def} spot={spot}
+          reaction={petReactions[petId]} onTap={() => tapPet(petId)} />
       ))}
 
-      {/* Pending gifts — glowing pouches at the spots pets vacated */}
+      {/* Arrival sparkle over the new pet's spot */}
+      {arrival && (
+        <div key={arrival.key} style={{
+          position: 'absolute', left: '50%', top: '55%', zIndex: 24,
+          fontSize: 44, pointerEvents: 'none',
+          animation: 'arriveSparkle 1.4s ease-out both',
+        }}>✨</div>
+      )}
+
+      {/* Pending gifts */}
       {save.pendingGifts.map(gift => {
-        const pos = gift.position || { x: 50, y: 70 }; // tolerate legacy gifts
+        const pos = gift.position || { x: 50, y: 70 };
         return (
           <div key={gift.id} onPointerDown={() => collectGift(gift)} style={{
             position: 'absolute', left: `${pos.x}%`, top: `${pos.y}%`,
@@ -241,25 +310,63 @@ export default function RoomScreen({
         );
       })}
 
-      {/* HUD */}
+      {/* ── HUD ── */}
+      {/* Penny jar — top-left, fills as Pennies accumulate */}
       <div style={{
-        position: 'absolute', top: 10, left: 10, right: 10, zIndex: 20,
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        pointerEvents: 'none',
+        position: 'absolute', top: 10, left: 10, zIndex: 20,
+        display: 'flex', alignItems: 'center', gap: 7,
       }}>
-        <span style={{
-          pointerEvents: 'auto',
-          fontSize: 15, color: '#5a3a1a', fontWeight: 'bold',
-          background: 'rgba(255,240,200,0.9)', borderRadius: 16, padding: '5px 12px',
-          border: '1px solid rgba(180,140,70,0.5)', boxShadow: '0 2px 6px rgba(0,0,0,0.2)',
-        }}>🪙 {save.pennies}</span>
-
-        <div style={{ display: 'flex', gap: 8, pointerEvents: 'auto' }}>
-          <button onPointerDown={onToggleMute} style={hudBtn} aria-label={muted ? 'Unmute' : 'Mute'}>
-            {muted ? '🔇' : '🔉'}
-          </button>
-          <button onPointerDown={onOpenShop} style={hudBtn} aria-label="Shop">🛍️</button>
+        <div style={{ position: 'relative', width: 34, height: 42 }}>
+          {/* Jar (placeholder art: CSS jar) */}
+          <div style={{
+            position: 'absolute', inset: 0, borderRadius: '6px 6px 14px 14px',
+            border: '2.5px solid rgba(120,85,40,0.75)',
+            background: 'rgba(255,250,238,0.35)', overflow: 'hidden',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.25), inset 0 1px 0 rgba(255,255,255,0.5)',
+          }}>
+            <div style={{
+              position: 'absolute', left: 0, right: 0, bottom: 0,
+              height: `${Math.round(jarFill * 100)}%`,
+              background: 'linear-gradient(180deg, #f2c75c, #d49a2e)',
+              transition: 'height 0.6s ease',
+            }} />
+          </div>
+          {/* Lid */}
+          <div style={{
+            position: 'absolute', top: -4, left: 3, right: 3, height: 6,
+            borderRadius: 3, background: 'rgba(120,85,40,0.85)',
+          }} />
+          {/* Coin drop on earnings */}
+          {coinDrop && (
+            <span key={coinDrop} style={{
+              position: 'absolute', top: -2, left: '50%', marginLeft: -8,
+              fontSize: 16, pointerEvents: 'none',
+              animation: 'coinFall 0.8s ease-in both',
+            }}>🪙</span>
+          )}
         </div>
+        <span style={{
+          fontSize: 15, color: '#5a3a1a', fontWeight: 'bold',
+          background: 'rgba(255,240,200,0.9)', borderRadius: 14, padding: '4px 11px',
+          border: '1px solid rgba(180,140,70,0.5)', boxShadow: '0 2px 6px rgba(0,0,0,0.2)',
+        }}>{save.pennies}</span>
+      </div>
+
+      {/* Controls — top-right */}
+      <div style={{ position: 'absolute', top: 10, right: 10, zIndex: 20, display: 'flex', gap: 8 }}>
+        {save.music.lyricsUnlocked && (
+          <button
+            onPointerDown={() => updateSave(s => ({ ...s, music: { ...s.music, lyricsEnabled: !s.music.lyricsEnabled } }))}
+            style={hudBtn}
+            aria-label={save.music.lyricsEnabled ? 'Switch to instrumental' : 'Switch to lyrics'}
+          >
+            {save.music.lyricsEnabled ? '🎤' : '🎼'}
+          </button>
+        )}
+        <button onPointerDown={onToggleMute} style={hudBtn} aria-label={muted ? 'Unmute' : 'Mute'}>
+          {muted ? '🔇' : '🔉'}
+        </button>
+        <button onPointerDown={onOpenShop} style={hudBtn} aria-label="Shop">🛍️</button>
       </div>
 
       {/* Welcome back moment */}
@@ -275,45 +382,165 @@ export default function RoomScreen({
         </div>
       )}
 
-      {/* Repair card modal */}
-      {repairCardId && (() => {
-        const item = REPAIRS.find(r => r.id === repairCardId);
-        const afford = save.pennies >= item.price;
-        return (
-          <div onPointerDown={() => setRepairCardId(null)} style={{
-            position: 'absolute', inset: 0, zIndex: 30,
-            background: 'rgba(30,20,10,0.55)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24,
-          }}>
-            <div onPointerDown={e => e.stopPropagation()} style={{
-              background: 'linear-gradient(160deg,#fffdf2,#f3e6c4)',
-              borderRadius: 20, padding: '24px 26px', maxWidth: 300, width: '100%',
-              textAlign: 'center', border: '2px solid #d4aa60', boxShadow: '0 8px 36px rgba(0,0,0,0.4)',
-            }}>
-              <h3 style={{ margin: '0 0 6px', fontWeight: 'normal', color: '#5a3a1a', fontSize: 20 }}>{item.name}</h3>
-              <p style={{ margin: '0 0 14px', fontSize: 13, color: '#8a6f50', fontStyle: 'italic' }}>{item.description}</p>
-              <div style={{ fontSize: 13, color: '#7a5430', marginBottom: 16 }}>
-                Cost: 🪙 {item.price} &nbsp;·&nbsp; Time: {formatDuration(item.durationMs)}
+      {/* Reveal flash — a warm wash while the room becomes new */}
+      {revealFlash && (
+        <div style={{
+          position: 'absolute', inset: 0, zIndex: 28, pointerEvents: 'none',
+          background: 'radial-gradient(circle, rgba(255,240,190,0.95), rgba(245,205,110,0.55))',
+          animation: 'revealFlash 0.95s ease-out both',
+        }} />
+      )}
+
+      {/* Reveal line */}
+      {revealLine && (
+        <div key={revealLine.key} style={{
+          position: 'absolute', bottom: '12%', left: '50%', zIndex: 29,
+          animation: 'revealLineIn 0.5s ease-out both', pointerEvents: 'none',
+          background: 'rgba(50,32,12,0.88)', color: '#ffeec8',
+          padding: '10px 22px', borderRadius: 20, fontStyle: 'italic', fontSize: 15,
+          boxShadow: '0 4px 18px rgba(0,0,0,0.4)', maxWidth: '82%', textAlign: 'center',
+        }}>
+          {revealLine.text}
+        </div>
+      )}
+
+      {/* Pet arrival card */}
+      {arrival && (
+        <div key={`card-${arrival.key}`} style={{
+          position: 'absolute', bottom: '18%', left: '50%', transform: 'translateX(-50%)',
+          zIndex: 29, animation: 'cardIn 0.4s ease-out both', pointerEvents: 'none',
+          background: 'linear-gradient(160deg,#fffdf2,#f3e6c4)', color: '#6a4a28',
+          border: '2px solid #d4aa60', borderRadius: 18, padding: '12px 20px',
+          fontSize: 14, fontStyle: 'italic', maxWidth: '80%', textAlign: 'center',
+          boxShadow: '0 6px 24px rgba(0,0,0,0.4)',
+        }}>
+          <div style={{ fontSize: 17, fontStyle: 'normal', marginBottom: 4 }}>
+            {arrival.name} is home 🐾
+          </div>
+          {arrival.line}
+        </div>
+      )}
+
+      {/* ── Project card modal ── */}
+      {projectCardOpen && project && (
+        <Modal onClose={() => setProjectCardOpen(false)}>
+          <h3 style={{ margin: '0 0 6px', fontWeight: 'normal', color: '#5a3a1a', fontSize: 21 }}>{project.name}</h3>
+          <p style={{ margin: '0 0 14px', fontSize: 13.5, color: '#8a6f50', fontStyle: 'italic', lineHeight: 1.45 }}>
+            {project.teaser}
+          </p>
+          {building ? (
+            <div style={{ fontSize: 13.5, color: '#7a5430' }}>
+              🧰 Underway — ready in {formatDuration(Math.max(0, active.completesAt - now))}
+            </div>
+          ) : (
+            <>
+              <div style={{ fontSize: 13, color: save.pennies >= project.cost ? '#7a5430' : 'rgba(140,110,70,0.55)', marginBottom: 16 }}>
+                🪙 {project.cost} &nbsp;·&nbsp; takes {formatDuration(project.durationMs)}
               </div>
               <button
-                onPointerDown={() => startRepair(item)}
-                disabled={!afford}
+                onPointerDown={handleBeginProject}
+                disabled={save.pennies < project.cost}
                 style={{
                   padding: '10px 24px', borderRadius: 16,
-                  border: '2px solid ' + (afford ? '#b8843c' : 'rgba(150,110,60,0.3)'),
-                  background: afford ? 'linear-gradient(135deg,#e8b45a,#c8862a)' : 'transparent',
-                  color: afford ? '#fff8e7' : 'rgba(140,110,70,0.6)',
+                  border: '2px solid ' + (save.pennies >= project.cost ? '#b8843c' : 'rgba(150,110,60,0.25)'),
+                  background: save.pennies >= project.cost ? 'linear-gradient(135deg,#e8b45a,#c8862a)' : 'transparent',
+                  color: save.pennies >= project.cost ? '#fff8e7' : 'rgba(140,110,70,0.55)',
                   fontFamily: 'Georgia, serif', fontSize: 14, fontWeight: 'bold',
-                  cursor: afford ? 'pointer' : 'default',
+                  cursor: save.pennies >= project.cost ? 'pointer' : 'default',
                   WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation',
                 }}
               >
-                {afford ? 'Start the repair' : 'Not enough Pennies yet'}
+                {save.pennies >= project.cost ? 'Let’s do it' : 'A few more Pennies first'}
               </button>
-            </div>
+            </>
+          )}
+        </Modal>
+      )}
+
+      {/* ── Achievements tray viewer ── */}
+      {trayOpen && (
+        <Modal onClose={() => { setTrayOpen(false); setTrayDetail(null); }} wide>
+          <h3 style={{ margin: '0 0 2px', fontWeight: 'normal', color: '#5a3a1a', fontSize: 20 }}>The Type Tray</h3>
+          <p style={{ margin: '0 0 12px', fontSize: 12, color: '#8a6f50', fontStyle: 'italic' }}>
+            Every little thing you’ve done, kept safe.
+          </p>
+          <div style={{
+            display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 7,
+            maxHeight: '40dvh', overflowY: 'auto', padding: 2,
+          }}>
+            {ACHIEVEMENTS.map(a => {
+              const at = unlockedAch[a.id];
+              return (
+                <button key={a.id}
+                  onPointerDown={() => at && setTrayDetail(a.id)}
+                  style={{
+                    aspectRatio: '1', borderRadius: 10,
+                    border: '1.5px solid ' + (at ? '#cfa050' : 'rgba(150,110,60,0.2)'),
+                    background: at ? 'linear-gradient(135deg,#fff6dc,#f3e2ac)' : 'rgba(180,150,100,0.12)',
+                    fontSize: 20, cursor: at ? 'pointer' : 'default',
+                    opacity: at ? 1 : 0.5,
+                    filter: at ? 'none' : 'grayscale(1) blur(0.4px)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation',
+                  }}
+                  aria-label={at ? a.name : 'Locked'}
+                >
+                  {at ? trinketEmoji(a) : '·'}
+                </button>
+              );
+            })}
           </div>
-        );
-      })()}
+          {trayDetail && (() => {
+            const a = ACHIEVEMENTS.find(x => x.id === trayDetail);
+            const at = unlockedAch[trayDetail];
+            return (
+              <div style={{
+                marginTop: 12, padding: '10px 14px', borderRadius: 14, textAlign: 'left',
+                background: 'linear-gradient(135deg,#fff6dc,#f6e2a8)', border: '1.5px solid #d8b256',
+                animation: 'cardIn 0.3s ease-out both',
+              }}>
+                <div style={{ fontSize: 14, color: '#6a4310', fontWeight: 'bold' }}>{trinketEmoji(a)} {a.name}</div>
+                <div style={{ fontSize: 12, color: '#8a6a40', fontStyle: 'italic', margin: '3px 0' }}>{a.description}</div>
+                <div style={{ fontSize: 11, color: '#a07a40' }}>
+                  earned {new Date(at).toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' })}
+                </div>
+              </div>
+            );
+          })()}
+        </Modal>
+      )}
+
+      {/* ── Song gift card ── */}
+      {songCardOpen && (
+        <Modal onClose={() => setSongCardOpen(false)}>
+          <div style={{ fontSize: 34, marginBottom: 8 }}>💝</div>
+          <p style={{ margin: '0 0 16px', fontSize: 15, color: '#6a4a28', lineHeight: 1.55 }}>
+            {SONG_GIFT.cardText}
+          </p>
+          <div style={{ fontSize: 12, color: '#a07a40', fontStyle: 'italic' }}>♪ now playing ♪</div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+// ── Sub-components ────────────────────────────────────────────────────────────
+
+function Modal({ children, onClose, wide = false }) {
+  return (
+    <div onPointerDown={onClose} style={{
+      position: 'absolute', inset: 0, zIndex: 30,
+      background: 'rgba(30,20,10,0.55)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24,
+    }}>
+      <div onPointerDown={e => e.stopPropagation()} style={{
+        background: 'linear-gradient(160deg,#fffdf2,#f3e6c4)',
+        borderRadius: 20, padding: '24px 26px', maxWidth: wide ? 380 : 300, width: '100%',
+        textAlign: 'center', border: '2px solid #d4aa60', boxShadow: '0 8px 36px rgba(0,0,0,0.4)',
+        animation: 'cardIn 0.3s ease-out both',
+      }}>
+        {children}
+      </div>
     </div>
   );
 }
@@ -366,32 +593,6 @@ function Pet({ def, spot, reaction, onTap }) {
       )}
     </div>
   );
-}
-
-// Placeholder-aware overlay renderer
-function Overlay({ overlay, label }) {
-  const o = overlay;
-  return (
-    <div style={{
-      position: 'absolute', left: `${o.x}%`, top: `${o.y}%`,
-      width: `${o.w}%`, height: `${o.h}%`, zIndex: o.z ?? 2,
-      pointerEvents: 'none',
-      background: o.image ? `url(${o.image}) center/contain no-repeat` : o.color,
-      borderRadius: 8,
-      border: o.image ? 'none' : '1px dashed rgba(255,255,255,0.35)',
-      display: o.image ? 'block' : 'flex', alignItems: 'center', justifyContent: 'center',
-      fontSize: 9, color: 'rgba(255,255,255,0.85)', textAlign: 'center',
-      textShadow: '0 1px 2px rgba(0,0,0,0.5)',
-    }}>
-      {!o.image && label}
-    </div>
-  );
-}
-
-function formatDuration(ms) {
-  if (ms < 60 * 1000) return `${Math.round(ms / 1000)}s`;
-  if (ms < 60 * 60 * 1000) return `${Math.round(ms / 60000)} min`;
-  return `${Math.round(ms / 3600000)} hr`;
 }
 
 const hudBtn = {

@@ -54,3 +54,12 @@ img {
   0%, 100% { box-shadow: 0 0 0 2px rgba(190,110,55,0.45), 0 1px 10px rgba(190,110,55,0.3); }
   50%       { box-shadow: 0 0 0 3px rgba(190,110,55,0.7),  0 2px 14px rgba(190,110,55,0.5); }
 }
+
+/* Small side-to-side shake on a checker that can't move right now */
+@keyframes checkerNudge {
+  0%, 100% { transform: translateX(0); }
+  20%       { transform: translateX(-7%); }
+  45%       { transform: translateX(6%); }
+  70%       { transform: translateX(-4%); }
+  88%       { transform: translateX(2%); }
+}

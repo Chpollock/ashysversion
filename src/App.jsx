@@ -70,6 +70,21 @@ export default function App() {
     updateSave(s => ({ ...s, music: { ...s.music, muted: !s.music.muted } }));
   }
 
+  // The song gift: play the lyrics track through ONCE as a focused moment —
+  // background loop pauses, the song plays, then the loop quietly returns.
+  function playLyricsOnce() {
+    const bg = audioRef.current;
+    bg?.pause();
+    const song = new Audio(lyricsFile);
+    song.volume = 0.55;
+    const resume = () => {
+      if (bg && !save.music.muted) bg.play().catch(() => {});
+    };
+    song.addEventListener('ended', resume, { once: true });
+    song.addEventListener('error', resume, { once: true });
+    song.play().catch(resume);
+  }
+
   // Enter the room, relocating pets first (while the room is off-screen, so a pet
   // never visibly teleports). reason: 'appOpen' factors time away; 'return' is a
   // flat per-pet chance.
@@ -103,6 +118,7 @@ export default function App() {
         welcomeBack={welcomeBack}
         onEnterGame={() => { setWelcomeBack(false); setScreen('game'); }}
         onOpenShop={() => { setWelcomeBack(false); setScreen('shop'); }}
+        onPlayLyricsOnce={playLyricsOnce}
       />
     );
   }

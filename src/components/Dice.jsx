@@ -1,5 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
 
+// Dice UI, split in two:
+//   <DiceFaces>    — the dice themselves, rendered ON the board (each player's
+//                    half, like a real game). Animates every roll via rollId.
+//   <RollControls> — the Roll button / Charlie's thinking dots / hover hint,
+//                    rendered below the board.
+
 // ─── Dot layout per face ──────────────────────────────────────────────────────
 const DOT_POSITIONS = {
   1: [[50, 50]],
@@ -41,11 +47,12 @@ const KEYFRAMES = `
 `;
 
 // ─── Single die face ──────────────────────────────────────────────────────────
-function DieFace({ value, used, isDouble, hoverable, active }) {
+function DieFace({ value, used, isDouble, hoverable, active, size = 44 }) {
   const dots = DOT_POSITIONS[value] || DOT_POSITIONS[1];
+  const dot = Math.max(5, Math.round(size * 0.16));
   return (
     <div style={{
-      width: 44, height: 44, borderRadius: 10, position: 'relative',
+      width: size, height: size, borderRadius: Math.round(size * 0.23), position: 'relative',
       flexShrink: 0,
       background: used
         ? 'rgba(139,109,56,0.22)'
@@ -66,52 +73,49 @@ function DieFace({ value, used, isDouble, hoverable, active }) {
         : isDouble
         ? '0 2px 8px rgba(200,150,42,0.4), inset 0 1px 0 rgba(255,255,255,0.8)'
         : '0 2px 8px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.8)',
-      opacity: used && !active ? 0.5 : 1,
+      opacity: used && !active ? 0.55 : 1,
       transform: active ? 'translateY(-2px) scale(1.05)' : 'none',
       transition: 'opacity 0.2s, transform 0.12s, box-shadow 0.12s',
       cursor: hoverable ? 'pointer' : 'default',
     }}>
       {dots.map(([x, y], i) => (
         <div key={i} style={{
-          position: 'absolute', width: 7, height: 7, borderRadius: '50%',
+          position: 'absolute', width: dot, height: dot, borderRadius: '50%',
           background: used && !active ? 'rgba(139,109,56,0.45)' : '#7a5430',
-          left: `calc(${x}% - 3.5px)`, top: `calc(${y}% - 3.5px)`,
+          left: `calc(${x}% - ${dot / 2}px)`, top: `calc(${y}% - ${dot / 2}px)`,
         }} />
       ))}
     </div>
   );
 }
 
-// ─── Main component ───────────────────────────────────────────────────────────
-export default function Dice({ dice, usedDice, dieMoves = {}, phase, onRoll, currentPlayer, onHoverDie }) {
-  // 'idle' | 'throwing' | 'settling' | 'resting'
-  const [throwState, setThrowState] = useState('idle');
-  // Random faces shown DURING the throw (same length as the real dice)
+// ─── Dice faces (rendered on the board) ───────────────────────────────────────
+// rollId increments on every roll, so both players' throws animate.
+export function DiceFaces({ dice, usedDice, dieMoves = {}, phase, currentPlayer, rollId = 0, onHoverDie, size = 36, label = null }) {
+  // 'resting' | 'throwing' | 'settling'
+  const [throwState, setThrowState] = useState('resting');
   const [flyFaces, setFlyFaces] = useState([]);
   const [activeDie, setActiveDie] = useState(null); // die index currently pressed/hovered
+  // -1 so the roll that mounts this component (dice appearing) animates too
+  const lastRollRef = useRef(-1);
 
-  const timersRef    = useRef([]);
-  const intervalsRef = useRef([]);
-  const diceRef      = useRef(dice);
-  useEffect(() => { diceRef.current = dice; }, [dice]);
-
-  // Reset to idle on a new rolling phase
+  // Animate the throw whenever a new roll lands (skip the initial mount)
   useEffect(() => {
-    if (phase === 'rolling') {
-      timersRef.current.forEach(clearTimeout);
-      intervalsRef.current.forEach(clearInterval);
-      timersRef.current = [];
-      intervalsRef.current = [];
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setThrowState('idle');
-    }
-    return () => {
-      timersRef.current.forEach(clearTimeout);
-      intervalsRef.current.forEach(clearInterval);
-    };
-  }, [phase]);
+    if (rollId === lastRollRef.current || !dice.length) return;
+    lastRollRef.current = rollId;
+    setThrowState('throwing');
 
-  const canRoll   = phase === 'rolling' && currentPlayer === 'ashton';
+    const spin = setInterval(() => {
+      setFlyFaces(Array.from({ length: dice.length }, () => Math.ceil(Math.random() * 6)));
+    }, 60);
+    const t1 = setTimeout(() => { clearInterval(spin); setThrowState('settling'); }, 650);
+    const t2 = setTimeout(() => setThrowState('resting'), 850);
+
+    return () => { clearInterval(spin); clearTimeout(t1); clearTimeout(t2); };
+  }, [rollId, dice.length]);
+
+  if (!dice.length) return null;
+
   const isDoubles = dice.length === 4;
   const isThrowing = throwState === 'throwing';
   const isSettling = throwState === 'settling';
@@ -121,103 +125,92 @@ export default function Dice({ dice, usedDice, dieMoves = {}, phase, onRoll, cur
     onHoverDie?.(i);
   }
 
-  function handleRoll() {
-    if (!canRoll || throwState !== 'idle') return;
-
-    // Dispatch first — the reducer resolves the real dice (2 or 4 for doubles),
-    // which arrive in the `dice` prop on the next render. We render straight from
-    // that, so the count is always correct (doubles always shows four dice).
-    onRoll();
-    setThrowState('throwing');
-
-    // Cycle random faces, sized to however many dice the roll produced
-    const id = setInterval(() => {
-      const n = diceRef.current.length || 2;
-      setFlyFaces(Array.from({ length: n }, () => Math.ceil(Math.random() * 6)));
-    }, 60);
-    intervalsRef.current.push(id);
-
-    const t1 = setTimeout(() => {
-      intervalsRef.current.forEach(clearInterval);
-      intervalsRef.current = [];
-      setThrowState('settling');
-    }, 650);
-    timersRef.current.push(t1);
-
-    const t2 = setTimeout(() => setThrowState('resting'), 850);
-    timersRef.current.push(t2);
-  }
-
-  // Always render one face per real die. During the throw, overlay cycling values
-  // (deterministic fallback to the real die so render stays pure).
-  const count = dice.length;
-  const faces = Array.from({ length: count }, (_, i) =>
-    isThrowing ? (flyFaces[i] ?? dice[i] ?? 1) : dice[i]
-  );
-
   // A die is hoverable (to reveal which piece it moved) once it's been used this turn
   const canHover = currentPlayer === 'ashton' && phase === 'moving';
+
+  const faces = dice.map((val, i) => (isThrowing ? (flyFaces[i] ?? val) : val));
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3 }}>
+      <style>{KEYFRAMES}</style>
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+        {faces.map((val, i) => {
+          const used = !isThrowing && usedDice.includes(i);
+          const hoverable = canHover && used && !!dieMoves[i];
+          const faceAnim = isThrowing ? 'dieFaceSpin 0.65s linear both' : 'none';
+          // Stagger via the shorthand's delay slot (mixing the `animation`
+          // shorthand with a separate animationDelay upsets React)
+          const wrapperAnim = isThrowing
+            ? `dieFlightWrapper 0.68s cubic-bezier(0.25,0.46,0.45,0.94) ${i * 90}ms both`
+            : isSettling
+            ? 'dieSettle 0.18s ease-out both'
+            : 'none';
+
+          return (
+            <div
+              key={i}
+              onPointerEnter={hoverable ? () => setHover(i) : undefined}
+              onPointerLeave={hoverable ? () => setHover(null) : undefined}
+              onPointerDown={hoverable ? (e) => { e.stopPropagation(); setHover(i); } : undefined}
+              onPointerUp={hoverable ? () => setHover(null) : undefined}
+              onPointerCancel={hoverable ? () => setHover(null) : undefined}
+              style={{
+                animation: wrapperAnim,
+                willChange: isThrowing || isSettling ? 'transform' : 'auto',
+                // The overlay wrapper is pointer-transparent; only hoverable
+                // dice opt back in (so they never block board taps).
+                pointerEvents: hoverable ? 'auto' : 'none',
+              }}
+            >
+              <div style={{ animation: faceAnim }}>
+                <DieFace
+                  value={val}
+                  used={used}
+                  isDouble={!isThrowing && isDoubles}
+                  hoverable={hoverable}
+                  active={activeDie === i}
+                  size={size}
+                />
+              </div>
+            </div>
+          );
+        })}
+        {isDoubles && throwState === 'resting' && (
+          <div style={{
+            fontSize: 11, color: '#c8962a',
+            fontFamily: 'Georgia, serif', fontStyle: 'italic',
+            letterSpacing: 0.5, marginLeft: 2,
+            textShadow: '0 1px 2px rgba(255,250,230,0.8)',
+          }}>
+            doubles!
+          </div>
+        )}
+      </div>
+      {label && (
+        <div style={{
+          fontSize: 10, color: '#6a4a28', fontFamily: 'Georgia, serif',
+          fontStyle: 'italic', letterSpacing: 0.4,
+          background: 'rgba(255,250,235,0.65)', padding: '1px 8px', borderRadius: 8,
+        }}>
+          {label}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Roll button / thinking dots / hint (below the board) ─────────────────────
+export function RollControls({ phase, currentPlayer, dieMoves = {}, onRoll }) {
+  const canRoll = phase === 'rolling' && currentPlayer === 'ashton';
+  const canHoverHint = currentPlayer === 'ashton' && phase === 'moving' && Object.keys(dieMoves).length > 0;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
       <style>{KEYFRAMES}</style>
 
-      {/* Dice faces */}
-      {count > 0 && (
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          {faces.map((val, i) => {
-            const used = !isThrowing && usedDice.includes(i);
-            const hoverable = canHover && used && !!dieMoves[i];
-            const faceAnim = isThrowing ? 'dieFaceSpin 0.65s linear both' : 'none';
-            const wrapperAnim = isThrowing
-              ? 'dieFlightWrapper 0.68s cubic-bezier(0.25,0.46,0.45,0.94) both'
-              : isSettling
-              ? 'dieSettle 0.18s ease-out both'
-              : 'none';
-            const wrapperDelay = isThrowing ? `${i * 90}ms` : '0ms';
-
-            return (
-              <div
-                key={i}
-                onPointerEnter={hoverable ? () => setHover(i) : undefined}
-                onPointerLeave={hoverable ? () => setHover(null) : undefined}
-                onPointerDown={hoverable ? () => setHover(i) : undefined}
-                onPointerUp={hoverable ? () => setHover(null) : undefined}
-                onPointerCancel={hoverable ? () => setHover(null) : undefined}
-                style={{
-                  animation: wrapperAnim, animationDelay: wrapperDelay,
-                  willChange: isThrowing || isSettling ? 'transform' : 'auto',
-                }}
-              >
-                <div style={{ animation: faceAnim }}>
-                  <DieFace
-                    value={val}
-                    used={used}
-                    isDouble={!isThrowing && isDoubles}
-                    hoverable={hoverable}
-                    active={activeDie === i}
-                  />
-                </div>
-              </div>
-            );
-          })}
-
-          {isDoubles && throwState === 'resting' && (
-            <div style={{
-              fontSize: 11, color: '#c8962a',
-              fontFamily: 'Georgia, serif', fontStyle: 'italic',
-              letterSpacing: 0.5, marginLeft: 2,
-            }}>
-              doubles!
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Roll button */}
       {canRoll && (
         <button
-          onPointerDown={handleRoll}
+          onPointerDown={onRoll}
           style={{
             padding: '10px 28px', borderRadius: 20,
             border: '2px solid #b8843c',
@@ -227,7 +220,7 @@ export default function Dice({ dice, usedDice, dieMoves = {}, phase, onRoll, cur
             letterSpacing: 1, cursor: 'pointer',
             userSelect: 'none', touchAction: 'manipulation',
             WebkitTapHighlightColor: 'transparent',
-            animation: throwState === 'idle' ? 'rollButtonBreathe 2.2s ease-in-out infinite' : 'none',
+            animation: 'rollButtonBreathe 2.2s ease-in-out infinite',
             animationFillMode: 'both',
           }}
         >
@@ -235,15 +228,13 @@ export default function Dice({ dice, usedDice, dieMoves = {}, phase, onRoll, cur
         </button>
       )}
 
-      {/* Hint to mouse/press a used die */}
-      {canHover && Object.keys(dieMoves).length > 0 && (
+      {canHoverHint && (
         <div style={{ fontSize: 10.5, color: '#a07a4a', fontStyle: 'italic', fontFamily: 'Georgia, serif' }}>
           tap a used die to see what it moved
         </div>
       )}
 
-      {/* Charlie's animated thinking dots */}
-      {phase === 'rolling' && currentPlayer === 'charlie' && (
+      {(phase === 'rolling' || phase === 'moving') && currentPlayer === 'charlie' && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 5, height: 24 }}>
           <span style={{
             fontSize: 11, color: '#a07040',

@@ -3,7 +3,7 @@
 
 export default function PostGameScreen({ summary, onPlayAgain, onBackToRoom }) {
   if (!summary) return null;
-  const { result, payout, snippet, newAchievements, isFirstWinOfDay } = summary;
+  const { result, payout, snippet, newAchievements, isFirstWinOfDay, tier, newOpponents = [], bonuses = [] } = summary;
   const won = result === 'win';
 
   return (
@@ -30,19 +30,53 @@ export default function PostGameScreen({ summary, onPlayAgain, onBackToRoom }) {
         <h2 style={{ margin: '0 0 4px', fontSize: 26, fontWeight: 'normal', color: '#5a3010' }}>
           {won ? 'You won!' : 'Charlie wins'}
         </h2>
+        {!won && (
+          <div style={{ fontSize: 12.5, color: '#8a6a40', fontStyle: 'italic' }}>
+            A game finished is a game honored. Well played.
+          </div>
+        )}
+
+        {/* First win of the day — celebrated properly */}
+        {isFirstWinOfDay && payout.firstWinBonus > 0 && (
+          <div style={{
+            margin: '12px 0 2px',
+            background: 'linear-gradient(135deg,#ffeebc,#f8d678)',
+            border: '1.5px solid #d8a83c', borderRadius: 14,
+            padding: '8px 14px', fontSize: 15, color: '#7a4f10', fontWeight: 'bold',
+            boxShadow: '0 2px 12px rgba(216,168,60,0.4)',
+          }}>
+            🌞 First win of the day! +{payout.firstWinBonus}
+          </div>
+        )}
 
         {/* Pennies earned */}
         <div style={{ margin: '10px 0 6px', fontSize: 17, color: '#7a5430' }}>
-          🪙 +{payout.total} Pennies
+          🪙 +{payout.total + bonuses.reduce((s, b) => s + b.amount, 0)} Pennies
         </div>
-        {isFirstWinOfDay && payout.firstWinBonus > 0 && (
-          <div style={{ fontSize: 12.5, color: '#c8862a', fontStyle: 'italic', marginBottom: 2 }}>
-            includes +{payout.firstWinBonus} first win of the day!
-          </div>
-        )}
         {payout.streakBonus > 0 && (
           <div style={{ fontSize: 12, color: '#a07a40', fontStyle: 'italic' }}>
             +{payout.streakBonus} win-streak bonus
+          </div>
+        )}
+        {won && payout.tierBonus > 0 && tier && (
+          <div style={{ fontSize: 12, color: '#a07a40', fontStyle: 'italic' }}>
+            +{payout.tierBonus} for beating {tier.name}
+          </div>
+        )}
+        {won && payout.tierBonus < 0 && tier && (
+          <div style={{ fontSize: 12, color: '#a07a40', fontStyle: 'italic' }}>
+            {tier.name} pays a little less
+          </div>
+        )}
+
+        {/* Per-game bonuses — repeatable, itemized */}
+        {bonuses.length > 0 && (
+          <div style={{ margin: '8px 0 2px', display: 'flex', flexDirection: 'column', gap: 2 }}>
+            {bonuses.map(b => (
+              <div key={b.id} style={{ fontSize: 12.5, color: '#b8843c', fontStyle: 'italic' }}>
+                +{b.amount} — {b.label}
+              </div>
+            ))}
           </div>
         )}
 
@@ -53,6 +87,29 @@ export default function PostGameScreen({ summary, onPlayAgain, onBackToRoom }) {
         }}>
           {snippet}
         </p>
+
+        {/* Newly unlocked rivals / play styles */}
+        {newOpponents.length > 0 && (
+          <div style={{ margin: '16px 0 6px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {newOpponents.map((o, i) => (
+              <div key={o.id} style={{
+                background: 'linear-gradient(135deg,#fdeede,#f5d9ae)',
+                border: '1.5px solid #cf9450', borderRadius: 14,
+                padding: '8px 12px', textAlign: 'left',
+                display: 'flex', alignItems: 'center', gap: 10,
+                animation: `cardIn 0.4s ease-out ${0.15 + i * 0.12}s both`,
+              }}>
+                <span style={{ fontSize: 22 }}>{o.emoji ?? '🎲'}</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13.5, color: '#6a4310', fontWeight: 'bold' }}>
+                    {o.rewardMultiplier !== undefined ? `New rival unlocked — ${o.name}!` : `New style unlocked — ${o.name}!`}
+                  </div>
+                  <div style={{ fontSize: 11.5, color: '#8a6a40', fontStyle: 'italic' }}>{o.description}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
 
         {/* Newly unlocked achievements */}
         {newAchievements.length > 0 && (

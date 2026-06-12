@@ -13,6 +13,7 @@ export function getDefaultState() {
       totalPenniesEarned: 0,
       lastPlayedDate: null,   // 'YYYY-MM-DD' local date string
       gamesPlayedToday: 0,
+      winsByTier: {},         // { sleepy: n, classic: n, sharp: n }
     },
     firstWinOfDayDone: false,  // resets each new day
     music: {
@@ -20,28 +21,39 @@ export function getDefaultState() {
       lyricsEnabled: false,
       muted: false,
     },
+    // The living room's story: how many PROJECTS (game/roomStates.js) are
+    // complete, and the one currently building (null = none).
+    roomStateIndex: 0,
+    activeProject: null,   // { id, completesAt(ms) } | null
     room: {
       livingRoom: {
-        repairs: {},        // { itemId: 'in-progress' | 'done' }
-        repairTimers: {},   // { itemId: completionTimestamp(ms) }
-        furniture: [],      // placed furniture item ids
+        repairs: {},        // legacy (pre-projects) — kept so old saves parse
+        repairTimers: {},
+        furniture: [],
       },
     },
     shop: { purchased: [] },
     boards: { owned: ['sharpie'], equipped: 'sharpie' },
     pieceSets: { owned: ['paper'], equipped: 'paper' },
     pets: {
-      // spotId = current spot id (null = not placed yet); away = temporarily not in room
-      boombox: { unlocked: true,  spotId: null, away: false },
-      remy:    { unlocked: false, spotId: null, away: false },
-      hammy:   { unlocked: false, spotId: null, away: false },
+      // spotId = current spot (null = not placed); away = temporarily out;
+      // arrivesAt = en-route timestamp (purchased, not yet arrived);
+      // welcomed = the arrival moment has been shown.
+      boombox: { unlocked: true,  spotId: null, away: false, arrivesAt: null, welcomed: true },
+      remy:    { unlocked: false, spotId: null, away: false, arrivesAt: null, welcomed: false },
+      hammy:   { unlocked: false, spotId: null, away: false, arrivesAt: null, welcomed: false },
       lastGiftAt: 0,         // timestamp(ms) of last collected/spawned gift
       lastSeenAt: 0,         // timestamp(ms) the room was last arranged (for time-away)
     },
     // gifts waiting to be collected: [{ id, from, amount, position:{x,y}, zOrder }]
     pendingGifts: [],
-    achievements: { unlocked: [], progress: {} },
-    version: 2,
+    // unlocked = { achievementId: unlockedAt(ms) } — first-time-only, dated
+    achievements: { unlocked: {}, progress: {} },
+    // Charlie's equipped difficulty tier + play style (see game/aiOpponents.js).
+    // celebrated = tier/style ids whose "unlocked!" card has already been shown.
+    // Starts on the gentlest Charlie.
+    opponents: { tier: 'sleepy', style: 'balanced', celebrated: [] },
+    version: 5,
   };
 }
 
@@ -70,6 +82,18 @@ export function loadState() {
     if (!raw) return getDefaultState();
     const saved = JSON.parse(raw);
     const merged = mergeDeep(getDefaultState(), saved);
+    // v4: the default opponent became Sleepy Charlie. Saves written before then
+    // got 'classic' silently — reset them once so everyone starts gentle.
+    if ((saved.version ?? 0) < 4) merged.opponents.tier = 'sleepy';
+    // v5: achievements.unlocked moved from [id] to { id: unlockedAt }.
+    // (Check the RAW save — mergeDeep folds an array into an object keyed 0,1,…)
+    if (Array.isArray(saved?.achievements?.unlocked)) {
+      const at = Date.now();
+      merged.achievements = {
+        ...merged.achievements,
+        unlocked: Object.fromEntries(saved.achievements.unlocked.map(id => [id, at])),
+      };
+    }
     merged.version = getDefaultState().version; // always reflect current schema
     return merged;
   } catch {

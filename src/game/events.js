@@ -10,6 +10,7 @@ export const EV = {
   BAR_ENTER:            'BAR_ENTER',            // { player, point }
   // Derived at win time:
   GAMMON_WON:           'GAMMON_WON',           // { player }   loser bore off 0
+  BACKGAMMON_WON:       'BACKGAMMON_WON',       // { player }   gammon + loser still on bar / in winner's home
   WON_FROM_BEHIND:      'WON_FROM_BEHIND',      // { player, deficit }
   NO_DOUBLES_ALL_GAME:  'NO_DOUBLES_ALL_GAME',  // { player }
   FIVE_PLUS_HITS:       'FIVE_PLUS_HITS',       // { player, count }
@@ -40,6 +41,12 @@ export function pickSnippet(eventLog, result) {
   const ashHits = countEvents(eventLog, EV.BLOT_HIT, 'ashton');
   const ashDoubles = countEvents(eventLog, EV.DOUBLES_ROLLED, 'ashton');
 
+  if (result === 'win' && hasEvent(eventLog, EV.BACKGAMMON_WON, 'ashton')) {
+    return 'A full backgammon. Charlie would like the record to show he was distracted.';
+  }
+  if (result === 'loss' && hasEvent(eventLog, EV.BACKGAMMON_WON, 'charlie')) {
+    return 'A backgammon for Charlie. The dice have a lot to answer for.';
+  }
   if (result === 'win' && hasEvent(eventLog, EV.GAMMON_WON, 'ashton')) {
     return 'A gammon! Charlie didn’t bear off a single piece. Ouch (for him).';
   }
