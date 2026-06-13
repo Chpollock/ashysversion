@@ -47,7 +47,7 @@ const KEYFRAMES = `
 `;
 
 // ─── Single die face ──────────────────────────────────────────────────────────
-function DieFace({ value, used, isDouble, hoverable, active, size = 44 }) {
+function DieFace({ value, used, dead, isDouble, hoverable, active, size = 44 }) {
   const dots = DOT_POSITIONS[value] || DOT_POSITIONS[1];
   const dot = Math.max(5, Math.round(size * 0.16));
   return (
@@ -73,7 +73,7 @@ function DieFace({ value, used, isDouble, hoverable, active, size = 44 }) {
         : isDouble
         ? '0 2px 8px rgba(200,150,42,0.4), inset 0 1px 0 rgba(255,255,255,0.8)'
         : '0 2px 8px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.8)',
-      opacity: used && !active ? 0.55 : 1,
+      opacity: dead ? 0.5 : used && !active ? 0.55 : 1,
       transform: active ? 'translateY(-2px) scale(1.05)' : 'none',
       transition: 'opacity 0.2s, transform 0.12s, box-shadow 0.12s',
       cursor: hoverable ? 'pointer' : 'default',
@@ -85,13 +85,20 @@ function DieFace({ value, used, isDouble, hoverable, active, size = 44 }) {
           left: `calc(${x}% - ${dot / 2}px)`, top: `calc(${y}% - ${dot / 2}px)`,
         }} />
       ))}
+      {/* Unplayable this turn — crossed out */}
+      {dead && (
+        <svg viewBox="0 0 100 100" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}>
+          <line x1="16" y1="16" x2="84" y2="84" stroke="rgba(170,70,40,0.85)" strokeWidth="9" strokeLinecap="round" />
+          <line x1="84" y1="16" x2="16" y2="84" stroke="rgba(170,70,40,0.85)" strokeWidth="9" strokeLinecap="round" />
+        </svg>
+      )}
     </div>
   );
 }
 
 // ─── Dice faces (rendered on the board) ───────────────────────────────────────
 // rollId increments on every roll, so both players' throws animate.
-export function DiceFaces({ dice, usedDice, dieMoves = {}, phase, rollId = 0, onHoverDie, size = 36, label = null }) {
+export function DiceFaces({ dice, usedDice, dieMoves = {}, deadDice = [], phase, rollId = 0, onHoverDie, size = 36, label = null }) {
   // 'resting' | 'throwing' | 'settling'
   const [throwState, setThrowState] = useState('resting');
   const [flyFaces, setFlyFaces] = useState([]);
@@ -137,6 +144,7 @@ export function DiceFaces({ dice, usedDice, dieMoves = {}, phase, rollId = 0, on
       <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
         {faces.map((val, i) => {
           const used = !isThrowing && usedDice.includes(i);
+          const dead = !isThrowing && !used && deadDice.includes(i);
           const hoverable = canHover && used && !!dieMoves[i];
           const faceAnim = isThrowing ? 'dieFaceSpin 0.65s linear both' : 'none';
           // Stagger via the shorthand's delay slot (mixing the `animation`
@@ -167,6 +175,7 @@ export function DiceFaces({ dice, usedDice, dieMoves = {}, phase, rollId = 0, on
                 <DieFace
                   value={val}
                   used={used}
+                  dead={dead}
                   isDouble={!isThrowing && isDoubles}
                   hoverable={hoverable}
                   active={activeDie === i}

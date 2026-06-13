@@ -720,3 +720,43 @@ export function reachableTargets(state, fromPoint) {
 export function legalDestinations(state, fromPoint) {
   return [...reachableTargets(state, fromPoint).keys()];
 }
+
+// The FURTHEST a checker at `fromPoint` can travel this turn — the reachable
+// endpoint that consumes the most pips (bearing off wins ties). Returns the
+// ordered steps to play, or null if it can't move. Powers double-tap-to-move.
+export function furthestPath(state, fromPoint) {
+  let best = null, bestPips = -1;
+  for (const [to, steps] of reachableTargets(state, fromPoint)) {
+    const pips = steps.reduce((sum, s) => sum + s.die, 0);
+    const wins = pips > bestPips || (pips === bestPips && to === 'off');
+    if (wins) { bestPips = pips; best = steps; }
+  }
+  return best;
+}
+
+// Indices of unconsumed dice that CANNOT be played this turn (in any maximal
+// sequence) — the UI crosses these out. When the whole roll is unplayable,
+// every die is returned. Doubles return their unplayable excess too.
+export function deadDice(state) {
+  if (state.phase !== 'moving') return [];
+  const avail = [];
+  state.dice.forEach((value, idx) => { if (!state.usedDice.includes(idx)) avail.push({ value, idx }); });
+  if (!avail.length) return [];
+
+  // Most times each die VALUE is used across the maximal turn sequences
+  const maxUse = {};
+  for (const seq of enumerateMaxSequences(state)) {
+    const counts = {};
+    for (const m of seq) counts[m.die] = (counts[m.die] || 0) + 1;
+    for (const v in counts) maxUse[v] = Math.max(maxUse[v] || 0, counts[v]);
+  }
+
+  // Walk this value's unconsumed dice; any beyond its playable count are dead
+  const seen = {};
+  const dead = [];
+  for (const { value, idx } of avail) {
+    seen[value] = (seen[value] || 0) + 1;
+    if (seen[value] > (maxUse[value] || 0)) dead.push(idx);
+  }
+  return dead;
+}

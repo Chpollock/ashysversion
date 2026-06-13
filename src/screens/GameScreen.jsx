@@ -3,7 +3,7 @@ import BackgammonBoard from '../components/BackgammonBoard.jsx';
 import { DiceFaces, RollControls } from '../components/Dice.jsx';
 import OpponentPicker from '../components/OpponentPicker.jsx';
 import PostGameScreen from './PostGameScreen.jsx';
-import { gameReducer, createInitialState, rollDiceValues, rollOpeningValues, moveRestriction, allLegalMoves, pipCount } from '../game/gameLogic.js';
+import { gameReducer, createInitialState, rollDiceValues, rollOpeningValues, moveRestriction, allLegalMoves, pipCount, deadDice } from '../game/gameLogic.js';
 import { getAIMoves } from '../game/ai.js';
 import { AI_TIERS, AI_STYLES, TIER_BY_ID, STYLE_BY_ID } from '../game/aiOpponents.js';
 import { computePayout, isMeaningfulAbandon, ECONOMY } from '../game/economy.js';
@@ -12,6 +12,7 @@ import { loadGame, saveGame, clearGame } from '../state/gameSession.js';
 import { pickSnippet, EV } from '../game/events.js';
 import { evaluateAchievements } from '../game/achievements.js';
 import { pickCharlieLine } from '../game/charlieSpeech.js';
+import { backdropBackground } from '../game/backdrops.js';
 
 const AI_ROLL_MS  = 900;   // pause before Charlie picks up the dice
 const AI_THINK_MS = 1700;  // pause after the roll while he "thinks" about his moves
@@ -540,6 +541,8 @@ export default function GameScreen({ save, updateSave, muted, onToggleMute, onBa
     () => gameState.phase === 'moving' && allLegalMoves(gameState).length > 0,
     [gameState],
   );
+  // Dice that can't be played this turn get crossed out
+  const deadDiceIdx = useMemo(() => deadDice(gameState), [gameState]);
   const showEndTurn = gameState.phase === 'moving' && isAshtonTurn && !movesRemain;
   const rolledNoMoves = showEndTurn && gameState.usedDice.length === 0;
 
@@ -556,7 +559,8 @@ export default function GameScreen({ save, updateSave, muted, onToggleMute, onBa
   return (
     <div style={{
       minHeight: '100dvh',
-      background: 'linear-gradient(160deg, #f5e8c8 0%, #eedcaa 50%, #e5cc90 100%)',
+      // The equipped backdrop fills the screen behind the board + pieces
+      background: backdropBackground(save.backdrops?.equipped),
       display: 'flex', flexDirection: 'column', alignItems: 'center',
       // Safe areas keep the header off the notch and controls off the home bar
       padding: 'calc(12px + env(safe-area-inset-top)) 8px calc(24px + env(safe-area-inset-bottom))',
@@ -718,6 +722,7 @@ export default function GameScreen({ save, updateSave, muted, onToggleMute, onBa
               dice={gameState.dice}
               usedDice={gameState.usedDice}
               dieMoves={gameState.dieMoves}
+              deadDice={deadDiceIdx}
               phase={gameState.phase}
               currentPlayer={gameState.currentPlayer}
               rollId={gameState.rollId}

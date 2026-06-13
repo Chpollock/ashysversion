@@ -6,9 +6,12 @@ import {
 import { PETS, PET_ARRIVALS, getSpot } from '../game/petSpots.js';
 import { ACHIEVEMENTS, trinketEmoji } from '../game/achievements.js';
 import { AI_TIERS } from '../game/aiOpponents.js';
-import { hasSavedGame } from '../state/gameSession.js';
+import { hasSavedGame, clearGame } from '../state/gameSession.js';
+import { exportSave, importSave } from '../state/saveState.js';
+import { CHANGELOG } from '../game/changelog.js';
 
 const PET_TAP_COOLDOWN_MS = 1200;
+const ROOM_ASPECT = 1450 / 1085; // room images are landscape; portrait phones crop the sides
 
 export default function RoomScreen({
   save, updateSave, onEnterGame, onOpenShop, onPlayLyricsOnce,
@@ -24,6 +27,19 @@ export default function RoomScreen({
   const [trayDetail, setTrayDetail] = useState(null);     // achievement id
   const [statsOpen, setStatsOpen] = useState(false);
   const [resumeGame] = useState(() => hasSavedGame());    // a game waits mid-play
+  // Keepsake (save backup) state, inside the Record Book
+  const [backupCode, setBackupCode] = useState(null);     // shown code + 'copied' note
+  const [copied, setCopied] = useState(false);
+  const [restoreOpen, setRestoreOpen] = useState(false);
+  const [restoreText, setRestoreText] = useState('');
+  const [pendingRestore, setPendingRestore] = useState(null); // parsed state awaiting confirm
+  const [restoreMsg, setRestoreMsg] = useState(null);     // { ok, text }
+  const [changelogOpen, setChangelogOpen] = useState(false);
+  // Room panning: which third of the room is shown (-1 left, 0 center, 1 right)
+  const [roomView, setRoomView] = useState(0);
+  const [roomOverflow, setRoomOverflow] = useState(
+    () => Math.max(0, window.innerHeight * ROOM_ASPECT - window.innerWidth),
+  );
   const [songCardOpen, setSongCardOpen] = useState(false);
   const [petReactions, setPetReactions] = useState({});   // { petId: { emoji, key } }
   const [showWelcome, setShowWelcome] = useState(welcomeBack);
@@ -38,6 +54,11 @@ export default function RoomScreen({
   const ready = !!active && project && active.id === project.id && now >= active.completesAt;
   const board = boardHotspotForState(roomStateIndex);
 
+  // Panning: how far the room can scroll, and the current shift.
+  const canPan = roomOverflow > 6;
+  const objectPos = `${50 + roomView * 50}% 50%`;          // image content offset
+  const panPx = -roomView * (roomOverflow / 2);            // overlays move with it
+
   // Tick once a second so build timers and pet arrivals flip live
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000);
@@ -50,6 +71,13 @@ export default function RoomScreen({
     const t = setTimeout(() => setShowWelcome(false), 2600);
     return () => clearTimeout(t);
   }, [welcomeBack]);
+
+  // Recompute how much room is cropped when the viewport changes
+  useEffect(() => {
+    const onResize = () => setRoomOverflow(Math.max(0, window.innerHeight * ROOM_ASPECT - window.innerWidth));
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
 
   // Coin-drop animation whenever Pennies tick up while the room is visible
   useEffect(() => {
@@ -155,6 +183,44 @@ export default function RoomScreen({
     }));
   }
 
+  // ── Keepsake: backup & restore ──────────────────────────────────────────────
+  function makeBackup() {
+    const code = exportSave(save);
+    setBackupCode(code);
+    setCopied(false);
+    navigator.clipboard?.writeText(code).then(() => setCopied(true)).catch(() => {});
+  }
+
+  function tryRestore() {
+    const res = importSave(restoreText);
+    if (!res.ok) {
+      setPendingRestore(null);
+      setRestoreMsg({ ok: false, text: res.error });
+      return;
+    }
+    setRestoreMsg(null);
+    setPendingRestore(res.state); // hold for the confirm step (it overwrites progress)
+  }
+
+  function confirmRestore() {
+    const next = pendingRestore;
+    setPendingRestore(null);
+    updateSave(() => next);
+    clearGame(); // don't resume a match that doesn't belong to the restored progress
+    setRestoreText('');
+    setRestoreOpen(false);
+    setRestoreMsg({ ok: true, text: 'Restored ✨' });
+  }
+
+  // Reset the Keepsake UI whenever the Record Book closes
+  function closeStats() {
+    setStatsOpen(false);
+    setBackupCode(null); setCopied(false);
+    setRestoreOpen(false); setRestoreText('');
+    setPendingRestore(null); setRestoreMsg(null);
+    setChangelogOpen(false);
+  }
+
   // Pets currently visible. Boombox is painted into the early room images, so
   // his overlay only renders once the room moves past BAKED_PETS_UP_TO.
   const visiblePets = Object.keys(PETS)
@@ -201,19 +267,31 @@ export default function RoomScreen({
         @keyframes cardIn { 0% { opacity: 0; transform: translateY(10px) scale(0.96); } 100% { opacity: 1; transform: translateY(0) scale(1); } }
       `}</style>
 
-      {/* Room — the image IS the room state */}
+      {/* Room — the image IS the room state. objectPosition pans which third
+          of the (landscape) room shows on a portrait phone. */}
       <img src={roomImageForState(roomStateIndex)} alt="living room" draggable={false}
-        style={{ width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center', display: 'block' }} />
+        style={{
+          width: '100%', height: '100%', objectFit: 'cover', objectPosition: objectPos,
+          display: 'block', transition: 'object-position 0.45s ease',
+        }} />
 
       {/* During a reveal, the OLD room slowly fades away over the new one */}
       {revealTransition && (
         <img key={revealTransition.key} src={revealTransition.from} alt="" draggable={false}
           style={{
             position: 'absolute', inset: 0, width: '100%', height: '100%',
-            objectFit: 'cover', objectPosition: 'center', zIndex: 2, pointerEvents: 'none',
+            objectFit: 'cover', objectPosition: objectPos, zIndex: 2, pointerEvents: 'none',
             animation: 'crossFadeOut 2.2s ease-in-out both',
           }} />
       )}
+
+      {/* All the room's diegetic overlays live in one layer that slides in sync
+          with the image when she pans left/right. */}
+      <div style={{
+        position: 'absolute', inset: 0,
+        transform: `translateX(${panPx}px)`,
+        transition: 'transform 0.45s ease',
+      }}>
 
       {/* The board — the way into the game, once it exists. Before the first
           project (Draw the Board) there IS no board yet, so tapping the box
@@ -373,6 +451,21 @@ export default function RoomScreen({
           }}>🎁</div>
         );
       })}
+
+      </div>{/* end room overlay layer */}
+
+      {/* Look around — pan the room left/right to see the whole thing */}
+      {canPan && (
+        <div style={{
+          position: 'absolute', left: '50%', bottom: 'calc(16px + env(safe-area-inset-bottom))',
+          transform: 'translateX(-50%)', zIndex: 22, display: 'flex', gap: 14,
+        }}>
+          <button onPointerDown={() => setRoomView(v => Math.max(-1, v - 1))}
+            disabled={roomView <= -1} style={panBtn(roomView <= -1)} aria-label="Look left">‹</button>
+          <button onPointerDown={() => setRoomView(v => Math.min(1, v + 1))}
+            disabled={roomView >= 1} style={panBtn(roomView >= 1)} aria-label="Look right">›</button>
+        </div>
+      )}
 
       {/* ── HUD ── */}
       {/* Penny jar — top-left, fills as Pennies accumulate */}
@@ -582,7 +675,7 @@ export default function RoomScreen({
         const winRate = st.gamesPlayed > 0 ? Math.round((st.gamesWon / st.gamesPlayed) * 100) : 0;
         const achCount = Object.keys(unlockedAch).length;
         return (
-          <Modal onClose={() => setStatsOpen(false)} wide>
+          <Modal onClose={closeStats} wide>
             <h3 style={{ margin: '0 0 2px', fontWeight: 'normal', color: '#5a3a1a', fontSize: 20 }}>The Record Book</h3>
             <p style={{ margin: '0 0 12px', fontSize: 12, color: '#8a6f50', fontStyle: 'italic' }}>
               Every game counts. Especially the silly ones.
@@ -623,9 +716,128 @@ export default function RoomScreen({
                 );
               })}
             </div>
+
+            {/* ── Keepsake: back up & restore this little world ── */}
+            <div style={{
+              margin: '16px 0 6px', fontSize: 12, color: '#a07a40',
+              fontStyle: 'italic', letterSpacing: 0.5, textAlign: 'left',
+            }}>
+              keepsake
+            </div>
+
+            <div style={{ textAlign: 'left' }}>
+              <button onPointerDown={makeBackup} style={keepsakeBtn}>
+                💾 Copy a backup
+              </button>
+              <button onPointerDown={() => { setRestoreOpen(o => !o); setRestoreMsg(null); }} style={{ ...keepsakeBtn, marginLeft: 8 }}>
+                ↩ Restore
+              </button>
+
+              {/* The backup code — always shown for manual copy (clipboard is best-effort) */}
+              {backupCode && (
+                <div style={{ marginTop: 10 }}>
+                  <div style={{ fontSize: 11, color: '#8a6f50', fontStyle: 'italic', marginBottom: 4 }}>
+                    {copied ? 'Copied ✓ — paste it somewhere safe (Notes, a text to yourself).'
+                            : 'Select all and copy this — keep it somewhere safe.'}
+                  </div>
+                  <textarea readOnly value={backupCode}
+                    onFocus={e => e.target.select()}
+                    onPointerUp={e => e.target.select()}
+                    style={keepsakeBox} />
+                </div>
+              )}
+
+              {/* Restore: paste a code → confirm → overwrite */}
+              {restoreOpen && (
+                <div style={{ marginTop: 10 }}>
+                  <div style={{ fontSize: 11, color: '#8a6f50', fontStyle: 'italic', marginBottom: 4 }}>
+                    Paste a backup code to bring that world back.
+                  </div>
+                  <textarea value={restoreText} onChange={e => setRestoreText(e.target.value)}
+                    placeholder="ASHY1-…" style={keepsakeBox} />
+                  <button onPointerDown={tryRestore} style={{ ...keepsakeBtn, marginTop: 6 }}>
+                    Restore from this code
+                  </button>
+                </div>
+              )}
+
+              {restoreMsg && (
+                <div style={{
+                  marginTop: 8, fontSize: 12,
+                  color: restoreMsg.ok ? '#6a8a4a' : '#a85a30', fontStyle: 'italic',
+                }}>
+                  {restoreMsg.text}
+                </div>
+              )}
+            </div>
+
+            {/* ── What's new ── */}
+            <div style={{
+              margin: '16px 0 6px', fontSize: 12, color: '#a07a40',
+              fontStyle: 'italic', letterSpacing: 0.5, textAlign: 'left',
+            }}>
+              <button onPointerDown={() => setChangelogOpen(o => !o)} style={{
+                ...keepsakeBtn, background: 'rgba(255,250,235,0.6)', color: '#7a5430',
+                border: '1.5px solid rgba(150,110,60,0.35)',
+              }}>
+                ✨ what’s new {changelogOpen ? '▾' : '▸'}
+              </button>
+            </div>
+            {changelogOpen && (
+              <div style={{ textAlign: 'left' }}>
+                {CHANGELOG.map(drop => (
+                  <div key={drop.title} style={{ marginBottom: 10 }}>
+                    <div style={{ fontSize: 12.5, color: '#5a3a1a', fontWeight: 'bold', marginBottom: 3 }}>{drop.title}</div>
+                    {drop.notes.map((note, i) => (
+                      <div key={i} style={{ fontSize: 12, color: '#7a5430', fontStyle: 'italic', lineHeight: 1.45, marginBottom: 2 }}>
+                        • {note}
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            )}
           </Modal>
         );
       })()}
+
+      {/* ── Restore confirm (overwrites current progress) ── */}
+      {pendingRestore && (
+        <Modal onClose={() => setPendingRestore(null)}>
+          <div style={{ fontSize: 30, marginBottom: 6 }}>↩</div>
+          <h3 style={{ margin: '0 0 8px', fontWeight: 'normal', color: '#5a3a1a', fontSize: 19 }}>
+            Bring this world back?
+          </h3>
+          <p style={{ margin: '0 0 8px', fontSize: 13, color: '#8a6f50', fontStyle: 'italic', lineHeight: 1.45 }}>
+            This replaces everything here right now with the backup:
+          </p>
+          <div style={{
+            margin: '0 0 16px', fontSize: 13.5, color: '#6a4310',
+            background: 'rgba(255,250,235,0.7)', border: '1px solid rgba(150,110,60,0.3)',
+            borderRadius: 12, padding: '8px 12px',
+          }}>
+            🪙 {pendingRestore.pennies} · room {pendingRestore.roomStateIndex}/{PROJECTS.length} · {pendingRestore.stats.gamesWon} wins
+          </div>
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
+            <button onPointerDown={() => setPendingRestore(null)} style={{
+              padding: '9px 18px', borderRadius: 14,
+              border: '1.5px solid rgba(120,80,40,0.4)', background: 'rgba(120,80,40,0.1)',
+              color: '#7a5430', fontFamily: 'Georgia, serif', fontSize: 13,
+              cursor: 'pointer', WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation',
+            }}>
+              Keep what I have
+            </button>
+            <button onPointerDown={confirmRestore} style={{
+              padding: '9px 18px', borderRadius: 14,
+              border: '2px solid #b8843c', background: 'linear-gradient(135deg,#e8b45a,#c8862a)',
+              color: '#fff8e7', fontFamily: 'Georgia, serif', fontSize: 13, fontWeight: 'bold',
+              cursor: 'pointer', WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation',
+            }}>
+              Restore
+            </button>
+          </div>
+        </Modal>
+      )}
 
       {/* ── Song gift card ── */}
       {songCardOpen && (
@@ -825,4 +1037,32 @@ const hudBtn = {
   boxShadow: '0 2px 6px rgba(0,0,0,0.2)', WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation',
   minWidth: 44, minHeight: 44, // comfortable thumb target
   display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+};
+
+function panBtn(disabled) {
+  return {
+    width: 48, height: 48, borderRadius: 24,
+    border: '1.5px solid rgba(180,140,70,0.6)',
+    background: 'rgba(255,245,225,0.92)',
+    color: '#7a5430', fontSize: 24, lineHeight: 1, cursor: disabled ? 'default' : 'pointer',
+    opacity: disabled ? 0.35 : 1,
+    boxShadow: '0 2px 8px rgba(0,0,0,0.25)',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation',
+  };
+}
+
+const keepsakeBtn = {
+  padding: '8px 14px', borderRadius: 12,
+  border: '1.5px solid #b8843c', background: 'linear-gradient(135deg,#e8b45a,#c8862a)',
+  color: '#fff8e7', fontFamily: 'Georgia, serif', fontSize: 12.5, fontWeight: 'bold',
+  cursor: 'pointer', WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation',
+};
+
+const keepsakeBox = {
+  width: '100%', minHeight: 56, boxSizing: 'border-box', resize: 'none',
+  borderRadius: 10, border: '1px solid rgba(150,110,60,0.4)',
+  background: 'rgba(255,250,238,0.85)', color: '#6a4a28',
+  fontFamily: 'monospace', fontSize: 11, padding: '7px 9px', lineHeight: 1.4,
+  wordBreak: 'break-all', WebkitTapHighlightColor: 'transparent',
 };

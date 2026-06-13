@@ -6,6 +6,8 @@ import {
   moveRestriction,
   reachableTargets,
   enumerateMaxSequences,
+  furthestPath,
+  deadDice,
 } from './gameLogic.js';
 
 // ─── Test helpers ─────────────────────────────────────────────────────────────
@@ -185,6 +187,56 @@ describe('regression: bar entry when only the smaller die can play at all', () =
     const reach = reachableTargets(state, 'bar');
     expect(reach.has(23)).toBe(true);
     expect(reach.get(23)).toEqual([{ from: 'bar', to: 23, die: 1 }]);
+  });
+});
+
+describe('furthestPath (double-tap to move the farthest)', () => {
+  it('combines both dice to reach the farthest point', () => {
+    const state = makeState({ points: { 10: ['ashton', 1] }, dice: [3, 5] });
+    const steps = furthestPath(state, 10);
+    expect(steps.at(-1).to).toBe(2);                 // 10 → 5 → 2 (or 10 → 7 → 2)
+    expect(steps.reduce((s, m) => s + m.die, 0)).toBe(8);
+  });
+
+  it('bears off when that is the farthest a checker can go', () => {
+    const state = makeState({
+      points: { 2: ['ashton', 1] }, borneOff: { ashton: 14 }, dice: [3, 5],
+    });
+    expect(furthestPath(state, 2).at(-1).to).toBe('off');
+  });
+
+  it('returns null for a checker with no move', () => {
+    const state = makeState({
+      points: { 10: ['ashton', 1], 7: ['charlie', 2], 5: ['charlie', 2] },
+      dice: [3, 5],
+    });
+    expect(furthestPath(state, 10)).toBe(null);
+  });
+});
+
+describe('deadDice (crossed-out dice)', () => {
+  it('marks the die that can never be played', () => {
+    // Ashton on the bar, dice [1,6]: only the 1 can enter; the 6 is dead
+    const state = makeState({
+      points: { 5: ['ashton', 1], 18: ['charlie', 2], 17: ['charlie', 2] },
+      bar: { ashton: 1 }, dice: [1, 6],
+    });
+    expect(deadDice(state)).toEqual([1]); // index of the 6
+  });
+
+  it('marks every die when the whole roll is unplayable', () => {
+    const state = makeState({
+      points: { 23: ['charlie', 2], 22: ['charlie', 2] },
+      bar: { ashton: 1 }, dice: [1, 2],
+    });
+    expect(deadDice(state).sort()).toEqual([0, 1]);
+  });
+
+  it('marks nothing when both dice can be played', () => {
+    const state = createInitialState();
+    state.dice = [6, 5];
+    state.phase = 'moving';
+    expect(deadDice(state)).toEqual([]);
   });
 });
 

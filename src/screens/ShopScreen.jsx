@@ -1,9 +1,11 @@
 import { useState, useEffect } from 'react';
-import { SHOP_ITEMS, isOwned, applyPurchase } from '../game/shopItems.js';
+import { SHOP_ITEMS, FEATURED_ITEMS, isOwned, applyPurchase, equipBackdrop } from '../game/shopItems.js';
+import { BACKDROPS, BACKDROP_BY_ID, backdropBackground } from '../game/backdrops.js';
 import { nextProject, beginProject, projectDone, PROJECTS, formatDuration } from '../game/roomStates.js';
 import { PETS, PET_ARRIVALS } from '../game/petSpots.js';
 
 const TABS = [
+  { id: 'featured', label: '✨ Featured' },
   { id: 'projects', label: 'Projects' },
   { id: 'pets', label: 'Pets' },
   { id: 'rooms', label: 'Rooms' },
@@ -11,7 +13,7 @@ const TABS = [
 ];
 
 export default function ShopScreen({ save, updateSave, onBack }) {
-  const [tab, setTab] = useState('projects');
+  const [tab, setTab] = useState('featured');
   const [justBought, setJustBought] = useState(null);
   const [now, setNow] = useState(() => Date.now());
 
@@ -65,12 +67,86 @@ export default function ShopScreen({ save, updateSave, onBack }) {
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 480, width: '100%', margin: '0 auto' }}>
+        {tab === 'featured' && <FeaturedTab save={save} updateSave={updateSave} flash={flash} justBought={justBought} />}
         {tab === 'projects' && <ProjectsTab save={save} updateSave={updateSave} now={now} flash={flash} justBought={justBought} />}
         {tab === 'pets' && <PetsTab save={save} updateSave={updateSave} now={now} flash={flash} justBought={justBought} />}
         {tab === 'rooms' && <RoomsTab />}
         {tab === 'cosmetics' && <CosmeticsTab save={save} updateSave={updateSave} flash={flash} justBought={justBought} />}
       </div>
     </div>
+  );
+}
+
+// ── Featured: highlighted purchasable items (data-driven via `featured`) ──────
+function FeaturedTab({ save, updateSave, flash, justBought }) {
+  if (!FEATURED_ITEMS.length) {
+    return (
+      <Card>
+        <div style={{ fontSize: 13, color: '#8a6f50', fontStyle: 'italic' }}>
+          Nothing featured right now — check back soon. ✨
+        </div>
+      </Card>
+    );
+  }
+  return FEATURED_ITEMS.map(item => {
+    // Backdrops get a swatch + buy/equip; other featured items use a plain row.
+    if (item.grants.type === 'backdrop') {
+      return (
+        <BackdropRow key={item.id} backdrop={BACKDROP_BY_ID[item.grants.id]} item={item}
+          save={save} updateSave={updateSave} flash={flash} justBought={justBought} />
+      );
+    }
+    const owned = isOwned(item, save);
+    const afford = save.pennies >= item.price;
+    return (
+      <Card key={item.id} highlight={justBought === item.id}>
+        <Row emoji="✨" title={item.name} subtitle={item.description}
+          right={owned
+            ? <span style={{ fontSize: 18, color: '#8aa86a' }}>✓</span>
+            : (
+              <button onPointerDown={() => { if (afford) { updateSave(s => applyPurchase(s, item)); flash(item.id); } }}
+                disabled={!afford} style={buyBtn(afford)}>🪙 {item.price}</button>
+            )} />
+      </Card>
+    );
+  });
+}
+
+// A backdrop: swatch preview + buy (if a shop item) → equip → equipped.
+function BackdropRow({ backdrop, item, save, updateSave, flash, justBought }) {
+  const owned = (save.backdrops?.owned ?? ['default']).includes(backdrop.id);
+  const equipped = (save.backdrops?.equipped ?? 'default') === backdrop.id;
+  const afford = item ? save.pennies >= item.price : true;
+
+  let right;
+  if (equipped) {
+    right = <span style={{ fontSize: 13, color: '#8aa86a', fontStyle: 'italic' }}>equipped ✓</span>;
+  } else if (owned) {
+    right = (
+      <button onPointerDown={() => updateSave(s => equipBackdrop(s, backdrop.id))} style={equipBtn}>
+        equip
+      </button>
+    );
+  } else if (item) {
+    right = (
+      <button onPointerDown={() => { if (afford) { updateSave(s => applyPurchase(s, item)); flash(item.id); } }}
+        disabled={!afford} style={buyBtn(afford)}>🪙 {backdrop.cost}</button>
+    );
+  }
+
+  const swatch = (
+    <div style={{
+      width: 46, height: 46, borderRadius: 12, flexShrink: 0,
+      background: backdropBackground(backdrop.id),
+      border: '1px solid rgba(140,100,50,0.3)',
+      boxShadow: equipped ? '0 0 0 2px #c8862a' : 'inset 0 1px 2px rgba(0,0,0,0.08)',
+    }} />
+  );
+
+  return (
+    <Card highlight={!!item && justBought === item.id}>
+      <Row swatch={swatch} title={backdrop.name} subtitle={backdrop.description} right={right} />
+    </Card>
   );
 }
 
@@ -217,36 +293,47 @@ function RoomsTab() {
   );
 }
 
-// ── Boards & Pieces (cosmetics) ───────────────────────────────────────────────
+// ── Boards & Pieces (cosmetics) + backdrops equip ─────────────────────────────
 function CosmeticsTab({ save, updateSave, flash, justBought }) {
-  return SHOP_ITEMS.map(item => {
-    const owned = isOwned(item, save);
-    const afford = save.pennies >= item.price;
-    return (
-      <Card key={item.id} highlight={justBought === item.id}>
-        <Row
-          emoji="🎲"
-          title={item.name}
-          subtitle={item.description}
-          right={owned
-            ? <span style={{ fontSize: 18, color: '#8aa86a' }}>✓</span>
-            : (
-              <button
-                onPointerDown={() => {
-                  if (owned || !afford) return;
-                  updateSave(s => applyPurchase(s, item));
-                  flash(item.id);
-                }}
-                disabled={!afford}
-                style={buyBtn(afford)}
-              >
-                🪙 {item.price}
-              </button>
-            )}
-        />
-      </Card>
-    );
-  });
+  const cosmetics = SHOP_ITEMS.filter(i => i.category === 'cosmetics');
+  return (
+    <>
+      {cosmetics.map(item => {
+        const owned = isOwned(item, save);
+        const afford = save.pennies >= item.price;
+        return (
+          <Card key={item.id} highlight={justBought === item.id}>
+            <Row
+              emoji="🎲"
+              title={item.name}
+              subtitle={item.description}
+              right={owned
+                ? <span style={{ fontSize: 18, color: '#8aa86a' }}>✓</span>
+                : (
+                  <button
+                    onPointerDown={() => { if (afford) { updateSave(s => applyPurchase(s, item)); flash(item.id); } }}
+                    disabled={!afford}
+                    style={buyBtn(afford)}
+                  >
+                    🪙 {item.price}
+                  </button>
+                )}
+            />
+          </Card>
+        );
+      })}
+
+      {/* Backdrops — owned ones equippable here (so she can always switch back) */}
+      <div style={{ fontSize: 12, color: '#a07a40', fontStyle: 'italic', letterSpacing: 0.5, margin: '6px 2px -2px' }}>
+        Backdrops
+      </div>
+      {BACKDROPS.map(b => (
+        <BackdropRow key={b.id} backdrop={b}
+          item={SHOP_ITEMS.find(i => i.grants.type === 'backdrop' && i.grants.id === b.id)}
+          save={save} updateSave={updateSave} flash={flash} justBought={justBought} />
+      ))}
+    </>
+  );
 }
 
 // ── Shared bits ───────────────────────────────────────────────────────────────
@@ -267,17 +354,19 @@ function Card({ children, highlight = false, dim = false }) {
   );
 }
 
-function Row({ emoji, title, subtitle, right, dim = false }) {
+function Row({ emoji, swatch, title, subtitle, right, dim = false }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 12, textAlign: 'left' }}>
-      <div style={{
-        width: 46, height: 46, borderRadius: 12, flexShrink: 0,
-        background: 'rgba(230,210,160,0.5)', border: '1px solid rgba(140,100,50,0.25)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        fontSize: 24, opacity: dim ? 0.45 : 1, filter: dim ? 'grayscale(0.7)' : 'none',
-      }}>
-        {emoji}
-      </div>
+      {swatch ?? (
+        <div style={{
+          width: 46, height: 46, borderRadius: 12, flexShrink: 0,
+          background: 'rgba(230,210,160,0.5)', border: '1px solid rgba(140,100,50,0.25)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontSize: 24, opacity: dim ? 0.45 : 1, filter: dim ? 'grayscale(0.7)' : 'none',
+        }}>
+          {emoji}
+        </div>
+      )}
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 14.5, color: '#5a3a1a' }}>{title}</div>
         <div style={{ fontSize: 12, color: '#8a6f50', fontStyle: 'italic', marginTop: 2, lineHeight: 1.4 }}>
@@ -302,6 +391,15 @@ function buyBtn(afford) {
     whiteSpace: 'nowrap',
   };
 }
+
+const equipBtn = {
+  flexShrink: 0,
+  padding: '7px 14px', borderRadius: 12,
+  border: '1.5px solid rgba(150,110,60,0.45)', background: 'rgba(255,250,235,0.75)',
+  color: '#7a5430', fontFamily: 'Georgia, serif', fontSize: 12.5,
+  cursor: 'pointer', WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation',
+  whiteSpace: 'nowrap',
+};
 
 const backBtnStyle = {
   background: 'rgba(255,250,235,0.6)',

@@ -1,5 +1,5 @@
 import { useState, useRef, useMemo, useEffect } from 'react';
-import { reachableTargets, allLegalMoves } from '../game/gameLogic.js';
+import { reachableTargets, allLegalMoves, furthestPath } from '../game/gameLogic.js';
 import boards from '../game/boards/index.js';
 
 // ─── Piece images (loaded at build time by Vite) ──────────────────────────────
@@ -162,6 +162,13 @@ export default function BackgammonBoard({ state, onSelectPiece, onMovePath, onBl
     if (selectedPoint !== null && reachable.has('off')) return moveTo('off');
     if (bar.ashton > 0 && selectedPoint !== 'bar' && !moveableSources.has('bar')) return nudge('bar');
     onSelectPiece('bar');
+  }
+
+  // Double-tap a movable own checker → send it as far as it can go this turn.
+  function doubleTapMove(src) {
+    if (phase !== 'moving' || currentPlayer !== 'ashton' || !moveableSources.has(src)) return;
+    const steps = furthestPath(state, src);
+    if (steps) onMovePath(steps);
   }
 
   // ── Drag-to-move ──────────────────────────────────────────────────────────
@@ -377,6 +384,7 @@ export default function BackgammonBoard({ state, onSelectPiece, onMovePath, onBl
                 onDragMove={moveDrag}
                 onDragEnd={() => endDrag(() => handlePointTap(i))}
                 onDragCancel={cancelDrag}
+                onDoubleTap={() => doubleTapMove(i)}
                 onPeekStart={inTrail && isTop ? () => onTrailHover?.(i) : undefined}
                 onPeekEnd={inTrail && isTop ? () => onTrailHover?.(null) : undefined}
                 interactive={!CALIBRATION_MODE && phase === 'moving' && currentPlayer === 'ashton' && pt.player === 'ashton'}
@@ -427,6 +435,7 @@ export default function BackgammonBoard({ state, onSelectPiece, onMovePath, onBl
               onDragMove={moveDrag}
               onDragEnd={() => endDrag(handleBarTap)}
               onDragCancel={cancelDrag}
+              onDoubleTap={() => doubleTapMove('bar')}
               interactive={!CALIBRATION_MODE && phase === 'moving' && currentPlayer === 'ashton'}
             />
           );
@@ -503,7 +512,7 @@ export default function BackgammonBoard({ state, onSelectPiece, onMovePath, onBl
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
-function Checker({ x, y, cs, player, img, selected, isTopmost, zOrder = 0, canMove = false, isFlashing = false, isNudging = false, isGhost = false, onDragStart, onDragMove, onDragEnd, onDragCancel, onPeekStart, onPeekEnd, interactive }) {
+function Checker({ x, y, cs, player, img, selected, isTopmost, zOrder = 0, canMove = false, isFlashing = false, isNudging = false, isGhost = false, onDragStart, onDragMove, onDragEnd, onDragCancel, onDoubleTap, onPeekStart, onPeekEnd, interactive }) {
   // Box shadow: priority — selected > flashing > default
   let innerShadow;
   if (selected) {
@@ -532,6 +541,7 @@ function Checker({ x, y, cs, player, img, selected, isTopmost, zOrder = 0, canMo
       onPointerMove={draggable ? onDragMove : undefined}
       onPointerUp={draggable ? (e) => { e.stopPropagation(); onDragEnd?.(e); }
         : peekable ? onPeekEnd : undefined}
+      onDoubleClick={draggable ? (e) => { e.stopPropagation(); onDoubleTap?.(); } : undefined}
       onPointerEnter={peekable ? onPeekStart : undefined}
       onPointerLeave={peekable ? onPeekEnd : undefined}
       onPointerCancel={draggable ? onDragCancel : peekable ? onPeekEnd : undefined}
@@ -664,6 +674,7 @@ function CalibDot({ x, y, label, color }) {
 }
 
 function BorneOffPile({ count, x, y, player, cs }) {
+  const left = 15 - count; // checkers still on the board / bar
   return (
     <div style={{
       position: 'absolute', left: `${x}%`, top: `${y}%`,
@@ -675,8 +686,12 @@ function BorneOffPile({ count, x, y, player, cs }) {
         background: player === 'ashton' ? '#e8d9b8' : '#7a5430',
         border: '1px solid rgba(0,0,0,0.2)',
       }} />
-      <span style={{ fontSize: 10, color: '#7a5430', fontFamily: 'Georgia, serif', lineHeight: 1 }}>
-        ×{count}
+      <span style={{
+        fontSize: 9.5, color: '#5a3a1a', fontFamily: 'Georgia, serif',
+        lineHeight: 1.15, textAlign: 'center', whiteSpace: 'nowrap',
+        background: 'rgba(255,248,230,0.75)', borderRadius: 6, padding: '1px 4px',
+      }}>
+        {count} off<br />{left} left
       </span>
     </div>
   );
