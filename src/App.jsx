@@ -3,6 +3,7 @@ import LoadingScreen from './screens/LoadingScreen.jsx';
 import RoomScreen from './screens/RoomScreen.jsx';
 import GameScreen from './screens/GameScreen.jsx';
 import ShopScreen from './screens/ShopScreen.jsx';
+import CalibrateOverlay from './screens/CalibrateOverlay.jsx';
 import { useSaveState } from './state/useSaveState.js';
 import { relocatePets } from './game/petSpots.js';
 import instrumentalFile from './assets/ashton-song-instrumental.mp3';
@@ -17,6 +18,10 @@ function todayStr() {
 export default function App() {
   const [screen, setScreen] = useState('loading'); // 'loading' | 'room' | 'game' | 'shop'
   const [welcomeBack, setWelcomeBack] = useState(false);
+  // Hidden dev calibration tool — open with ?calibrate
+  const [calibrate, setCalibrate] = useState(() => {
+    try { return new URLSearchParams(window.location.search).has('calibrate'); } catch { return false; }
+  });
   const { save, updateSave } = useSaveState();
   const audioRef = useRef(null);
 
@@ -104,12 +109,13 @@ export default function App() {
     enterRoom('appOpen');
   }
 
-  if (screen === 'loading') {
-    return <LoadingScreen onEnter={startMusicAndEnter} audioRef={audioRef} />;
-  }
+  const calibrateOverlay = calibrate ? <CalibrateOverlay onClose={() => setCalibrate(false)} /> : null;
 
-  if (screen === 'room') {
-    return (
+  let screenEl;
+  if (screen === 'loading') {
+    screenEl = <LoadingScreen onEnter={startMusicAndEnter} audioRef={audioRef} />;
+  } else if (screen === 'room') {
+    screenEl = (
       <RoomScreen
         save={save}
         updateSave={updateSave}
@@ -121,26 +127,19 @@ export default function App() {
         onPlayLyricsOnce={playLyricsOnce}
       />
     );
-  }
-
-  if (screen === 'shop') {
-    return (
-      <ShopScreen
+  } else if (screen === 'shop') {
+    screenEl = <ShopScreen save={save} updateSave={updateSave} onBack={() => enterRoom('return')} />;
+  } else {
+    screenEl = (
+      <GameScreen
         save={save}
         updateSave={updateSave}
-        onBack={() => enterRoom('return')}
+        muted={muted}
+        onToggleMute={toggleMute}
+        onBackToRoom={(gameFinished) => enterRoom(gameFinished ? 'gameOver' : 'return')}
       />
     );
   }
 
-  // game
-  return (
-    <GameScreen
-      save={save}
-      updateSave={updateSave}
-      muted={muted}
-      onToggleMute={toggleMute}
-      onBackToRoom={() => enterRoom('return')}
-    />
-  );
+  return <>{screenEl}{calibrateOverlay}</>;
 }

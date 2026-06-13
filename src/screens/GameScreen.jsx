@@ -451,7 +451,8 @@ export default function GameScreen({ save, updateSave, muted, onToggleMute, onBa
 
   function handleBackToRoom() {
     // Leaving never abandons — the game is saved and resumes from the room.
-    onBackToRoom();
+    // Finishing a game (gameover) guarantees any away cat comes home.
+    onBackToRoom(gameState.phase === 'gameover');
   }
 
   // Explicit, opted-into abandonment (from the confirm card). A small

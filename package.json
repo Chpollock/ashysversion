@@ -10,7 +10,8 @@
     "test": "vitest run",
     "preview": "vite preview",
     "extract-pieces": "node scripts/extractPieces.js",
-    "make-icons": "node scripts/makeIcons.js"
+    "make-icons": "node scripts/makeIcons.js",
+    "matte-pets": "node scripts/mattePets.js"
   },
   "dependencies": {
     "@fontsource/playfair-display": "^5.2.8",

@@ -41,24 +41,42 @@ export function getDefaultState() {
     // Swappable game backdrop behind the board (see game/backdrops.js).
     backdrops: { owned: ['default'], equipped: 'default' },
     pets: {
-      // spotId = current spot (null = not placed); away = temporarily out;
-      // arrivesAt = en-route timestamp (purchased, not yet arrived);
-      // welcomed = the arrival moment has been shown.
-      boombox: { unlocked: true,  spotId: null, away: false, arrivesAt: null, welcomed: true },
-      remy:    { unlocked: false, spotId: null, away: false, arrivesAt: null, welcomed: false },
-      hammy:   { unlocked: false, spotId: null, away: false, arrivesAt: null, welcomed: false },
+      // Per cat:
+      //   spotId  — current spot (null = not placed / away)
+      //   away    — temporarily out of the room; awayStatus = flavor line
+      //   pose    — chosen pose name at the current spot (curl_sleep, sit, …)
+      //   arrivesAt/welcomed — homecoming flow
+      //   bond    — monotonic affection counter (only ever rises)
+      //   milestonesGranted — bond-milestone ids already rewarded
+      //   lastVisitDate — 'YYYY-MM-DD' of last daily-visit bump (no streak/penalty)
+      //   inventory — owned treats/toys { toyId: count }
+      boombox: { unlocked: true,  spotId: null, pose: null, away: false, awayStatus: null,
+                 arrivesAt: null, welcomed: true, bond: 0, milestonesGranted: [],
+                 lastVisitDate: null, inventory: {}, firstGiftGiven: false },
+      remy:    { unlocked: false, spotId: null, pose: null, away: false, awayStatus: null,
+                 arrivesAt: null, welcomed: false, bond: 0, milestonesGranted: [],
+                 lastVisitDate: null, inventory: {},
+                 bananaCollection: { count: 0, entries: [] }, remyFirstBananaSeen: false },
+      hammy:   { unlocked: false, spotId: null, pose: null, away: false, awayStatus: null,
+                 arrivesAt: null, welcomed: false, bond: 0, milestonesGranted: [],
+                 lastVisitDate: null, inventory: {} },
       lastGiftAt: 0,         // timestamp(ms) of last collected/spawned gift
       lastSeenAt: 0,         // timestamp(ms) the room was last arranged (for time-away)
     },
-    // gifts waiting to be collected: [{ id, from, amount, position:{x,y}, zOrder }]
+    // gifts waiting to be collected (a sealed present at the vacated spot):
+    //   [{ id, from(petId), position:{x,y}, zOrder, tier, amount, name?, line?, keepsakeId?, banana? }]
     pendingGifts: [],
+    // append-only log of opened gifts (for the type-tray per-pet filter)
+    giftHistory: [],
+    // collected keepsakes (non-banana) — [{ id(keepsakeId), petId, name, line, date }]
+    keepsakes: [],
     // unlocked = { achievementId: unlockedAt(ms) } — first-time-only, dated
     achievements: { unlocked: {}, progress: {} },
     // Charlie's equipped difficulty tier + play style (see game/aiOpponents.js).
     // celebrated = tier/style ids whose "unlocked!" card has already been shown.
     // Starts on the gentlest Charlie.
     opponents: { tier: 'sleepy', style: 'balanced', celebrated: [] },
-    version: 7,
+    version: 8,
   };
 }
 

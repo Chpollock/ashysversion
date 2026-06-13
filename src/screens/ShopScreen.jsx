@@ -3,6 +3,7 @@ import { SHOP_ITEMS, FEATURED_ITEMS, isOwned, applyPurchase, equipBackdrop } fro
 import { BACKDROPS, BACKDROP_BY_ID, backdropBackground } from '../game/backdrops.js';
 import { nextProject, beginProject, projectDone, PROJECTS, formatDuration } from '../game/roomStates.js';
 import { PETS, PET_ARRIVALS } from '../game/petSpots.js';
+import { treatsForPet, ownsTreat, buyTreat } from '../game/petTreats.js';
 
 const TABS = [
   { id: 'featured', label: '✨ Featured' },
@@ -16,17 +17,24 @@ export default function ShopScreen({ save, updateSave, onBack }) {
   const [tab, setTab] = useState('featured');
   const [justBought, setJustBought] = useState(null);
   const [now, setNow] = useState(() => Date.now());
+  const [moment, setMoment] = useState(null); // { emoji, title, line, big? }
 
   // Tick so arrival/build countdowns stay live
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
   }, []);
+  useEffect(() => {
+    if (!moment) return;
+    const t = setTimeout(() => setMoment(null), moment.big ? 4200 : 3000);
+    return () => clearTimeout(t);
+  }, [moment]);
 
   function flash(id) {
     setJustBought(id);
     setTimeout(() => setJustBought(null), 900);
   }
+  function showMoment(m) { setMoment(m); }
 
   return (
     <div style={{
@@ -69,10 +77,25 @@ export default function ShopScreen({ save, updateSave, onBack }) {
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 480, width: '100%', margin: '0 auto' }}>
         {tab === 'featured' && <FeaturedTab save={save} updateSave={updateSave} flash={flash} justBought={justBought} />}
         {tab === 'projects' && <ProjectsTab save={save} updateSave={updateSave} now={now} flash={flash} justBought={justBought} />}
-        {tab === 'pets' && <PetsTab save={save} updateSave={updateSave} now={now} flash={flash} justBought={justBought} />}
+        {tab === 'pets' && <PetsTab save={save} updateSave={updateSave} now={now} flash={flash} justBought={justBought} showMoment={showMoment} />}
         {tab === 'rooms' && <RoomsTab />}
         {tab === 'cosmetics' && <CosmeticsTab save={save} updateSave={updateSave} flash={flash} justBought={justBought} />}
       </div>
+
+      {/* A sweet moment (banana first time / bond milestone) */}
+      {moment && (
+        <div style={{
+          position: 'fixed', bottom: 'calc(20px + env(safe-area-inset-bottom))', left: '50%',
+          transform: 'translateX(-50%)', zIndex: 60, pointerEvents: 'none',
+          background: 'linear-gradient(160deg,#fffdf2,#f3e6c4)', color: '#6a4a28',
+          border: '2px solid #d4aa60', borderRadius: 18, padding: '14px 22px',
+          maxWidth: 320, width: 'calc(100% - 32px)', textAlign: 'center', boxShadow: '0 6px 24px rgba(0,0,0,0.4)',
+        }}>
+          <div style={{ fontSize: moment.big ? 40 : 26, marginBottom: 4 }}>{moment.emoji}</div>
+          <div style={{ fontSize: moment.big ? 17 : 15, color: '#5a3a1a', fontWeight: 'bold', marginBottom: 3 }}>{moment.title}</div>
+          <div style={{ fontSize: 13, fontStyle: 'italic', lineHeight: 1.4 }}>{moment.line}</div>
+        </div>
+      )}
     </div>
   );
 }
@@ -208,8 +231,28 @@ function ProjectsTab({ save, updateSave, now, flash, justBought }) {
   );
 }
 
-// ── Pets: they arrive, they aren't bought ─────────────────────────────────────
-function PetsTab({ save, updateSave, now, flash, justBought }) {
+// ── Pets: they arrive, they aren't bought (+ treats for the ones who are home) ─
+function PetsTab({ save, updateSave, now, flash, justBought, showMoment }) {
+  function buy(treat) {
+    if (ownsTreat(save, treat) || save.pennies < treat.price) return;
+    let banana = null, milestones = [];
+    updateSave(s => { const r = buyTreat(s, treat); banana = r.banana; milestones = r.milestones; return r.save; });
+    flash(treat.id);
+    if (banana?.firstEver) {
+      showMoment({ emoji: '🍌', big: true, title: 'BANANA. A BANANA. FOR HER.',
+        line: 'She has never been so happy about anything. (Banana Collection started.)' });
+    } else if (banana?.milestone) {
+      showMoment({ emoji: '🍌', title: `Bananas: ${banana.milestone.name}`, line: `${banana.count} and counting.` });
+    } else if (milestones.length) {
+      const m = milestones[milestones.length - 1];
+      showMoment({ emoji: '💛', title: `${PETS[treat.petId].name} — ${m.name}`, line: `${m.line}  (+${m.reward} 🪙)` });
+    } else if (banana) {
+      showMoment({ emoji: '🍌', title: 'A banana for Remy', line: `Banana #${banana.count}. Pure joy.` });
+    }
+  }
+
+  const treatPets = ['boombox', 'remy'].filter(id => save.pets[id]?.unlocked);
+
   return (
     <>
       {/* Boombox — already home */}
@@ -271,6 +314,34 @@ function PetsTab({ save, updateSave, now, flash, justBought }) {
                 : available ? arr.teaser
                 : arr.lockedHint}
               right={right}
+            />
+          </Card>
+        );
+      })}
+
+      {/* Treats & toys — for whoever's already home. A bond accelerator + a gift. */}
+      {treatPets.length > 0 && (
+        <div style={{ fontSize: 12, color: '#a07a40', fontStyle: 'italic', letterSpacing: 0.5, margin: '8px 2px -2px', textAlign: 'center' }}>
+          treats & toys
+        </div>
+      )}
+      {treatPets.flatMap(id => treatsForPet(id)).map(treat => {
+        const owned = ownsTreat(save, treat);
+        const count = (save.pets[treat.petId]?.inventory ?? {})[treat.toy] ?? 0;
+        const afford = save.pennies >= treat.price;
+        return (
+          <Card key={treat.id} highlight={justBought === treat.id}>
+            <Row
+              emoji={treat.emoji}
+              title={`${treat.name} · for ${PETS[treat.petId].name}`}
+              subtitle={treat.description}
+              right={owned
+                ? <span style={{ fontSize: 13, color: '#8aa86a', fontStyle: 'italic' }}>owned ✓</span>
+                : (
+                  <button onPointerDown={() => buy(treat)} disabled={!afford} style={buyBtn(afford)}>
+                    🪙 {treat.price}{treat.stackable && count > 0 ? ` ·×${count}` : ''}
+                  </button>
+                )}
             />
           </Card>
         );

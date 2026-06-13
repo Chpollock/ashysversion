@@ -3,12 +3,23 @@ import {
   PROJECTS, nextProject, beginProject, roomImageForState, boardHotspotForState,
   BAKED_PETS_UP_TO, TYPE_TRAY, TRAY_UNLOCK_INDEX, SONG_GIFT, JAR_FULL_AT, formatDuration,
 } from '../game/roomStates.js';
-import { PETS, PET_ARRIVALS, getSpot } from '../game/petSpots.js';
+import {
+  PETS, PET_ARRIVALS, getSpot, poseImage, presentImage, SNUGGLE_IMAGE,
+  SHARED_SPOT, bothSnuggling, petLocation,
+} from '../game/petSpots.js';
+import { addBond, currentMilestone, dailyVisit } from '../game/petBond.js';
+import { openGift } from '../game/petGifts.js';
 import { ACHIEVEMENTS, trinketEmoji } from '../game/achievements.js';
 import { AI_TIERS } from '../game/aiOpponents.js';
 import { hasSavedGame, clearGame } from '../state/gameSession.js';
 import { exportSave, importSave } from '../state/saveState.js';
 import { CHANGELOG } from '../game/changelog.js';
+
+// Local 'YYYY-MM-DD'
+const todayStr = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
 
 const PET_TAP_COOLDOWN_MS = 1200;
 const ROOM_ASPECT = 1450 / 1085; // room images are landscape; portrait phones crop the sides
@@ -25,6 +36,7 @@ export default function RoomScreen({
   const [arrival, setArrival] = useState(null);           // { name, line, key }
   const [trayOpen, setTrayOpen] = useState(false);
   const [trayDetail, setTrayDetail] = useState(null);     // achievement id
+  const [trayTab, setTrayTab] = useState('achievements'); // achievements|keepsakes|bananas|gifts
   const [statsOpen, setStatsOpen] = useState(false);
   const [resumeGame] = useState(() => hasSavedGame());    // a game waits mid-play
   // Keepsake (save backup) state, inside the Record Book
@@ -44,8 +56,12 @@ export default function RoomScreen({
   const [petReactions, setPetReactions] = useState({});   // { petId: { emoji, key } }
   const [showWelcome, setShowWelcome] = useState(welcomeBack);
   const [coinDrop, setCoinDrop] = useState(null);         // key, retriggers the coin anim
+  const [petMoment, setPetMoment] = useState(null);       // { emoji, title, line, big?, key }
+  const [giftReveal, setGiftReveal] = useState(null);     // { from, tier, name, line, amount }
+  const [overviewOpen, setOverviewOpen] = useState(false);
   const petTapCooldown = useRef({});                      // { petId: lastTapTs }
   const prevPenniesRef = useRef(save.pennies);
+  const dailyDoneRef = useRef(false);                     // daily-visit processed this mount
 
   const roomStateIndex = save.roomStateIndex ?? 0;
   const project = nextProject(save);
@@ -78,6 +94,30 @@ export default function RoomScreen({
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, []);
+
+  // Daily visit — first time seeing each home cat today gives a warm bump + a
+  // few Pennies (a sweeter "missed you" after a gap). Once per mount; the
+  // per-cat date guards same-day repeats. Never punishes missed days.
+  useEffect(() => {
+    if (dailyDoneRef.current) return;
+    dailyDoneRef.current = true;
+    const today = todayStr();
+    const missed = [];
+    updateSave(s => {
+      let cur = s;
+      for (const petId of Object.keys(PETS)) {
+        const res = dailyVisit(cur, petId, today);
+        if (res) { cur = res.save; if (res.missed) missed.push(PETS[petId].name); }
+      }
+      return cur;
+    });
+    if (missed.length) {
+      setTimeout(() => showPetMoment({
+        emoji: '🥰', title: `${missed.join(' & ')} missed you`,
+        line: 'Right where you left them — glad you’re back.',
+      }), 700);
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Coin-drop animation whenever Pennies tick up while the room is visible
   useEffect(() => {
@@ -153,34 +193,65 @@ export default function RoomScreen({
   }
 
   // ── Pets ────────────────────────────────────────────────────────────────────
+  // A small celebratory card (milestone, "missed you", banana moment, …)
+  function showPetMoment(m) {
+    setPetMoment({ ...m, key: Date.now() });
+  }
+  useEffect(() => {
+    if (!petMoment) return;
+    const t = setTimeout(() => setPetMoment(null), petMoment.big ? 4200 : 3000);
+    return () => clearTimeout(t);
+  }, [petMoment]);
+
+  function reactAt(petId, emoji, ts) {
+    setPetReactions(r => ({ ...r, [petId]: { emoji, key: ts } }));
+    setTimeout(() => setPetReactions(r => { const n = { ...r }; delete n[petId]; return n; }), 1100);
+  }
+
   function tapPet(petId) {
-    // Deferred a tick so the impure bits (time, randomness) run strictly in
-    // event-time, never during a render pass.
+    // Deferred a tick so the impure bits (time, randomness) run in event-time.
     setTimeout(() => {
       const ts = Date.now();
       const last = petTapCooldown.current[petId] || 0;
       if (ts - last < PET_TAP_COOLDOWN_MS) return;
       petTapCooldown.current[petId] = ts;
       const reactions = PETS[petId].tapReactions;
-      const emoji = reactions[Math.floor(Math.random() * reactions.length)];
-      setPetReactions(r => ({ ...r, [petId]: { emoji, key: ts } }));
-      setTimeout(() => {
-        setPetReactions(r => {
-          const next = { ...r };
-          delete next[petId];
-          return next;
-        });
-      }, 1100);
+      reactAt(petId, reactions[Math.floor(Math.random() * reactions.length)], ts);
+      // Petting raises bond a touch; celebrate any milestone crossed.
+      let reached = [];
+      updateSave(s => { const res = addBond(s, petId, 1); reached = res.milestones; return res.save; });
+      if (reached.length) {
+        const m = reached[reached.length - 1];
+        showPetMoment({ emoji: '💛', title: `${PETS[petId].name} — ${m.name}`, line: `${m.line}  (+${m.reward} 🪙)` });
+      }
     }, 0);
   }
 
+  // Tapping the snuggle pair — a sweet shared reaction + a touch of bond to both.
+  function tapSnuggle() {
+    setTimeout(() => {
+      const ts = Date.now();
+      reactAt('boombox', '💕', ts);
+      updateSave(s => addBond(addBond(s, 'boombox', 1).save, 'remy', 1).save);
+    }, 0);
+  }
+
+  // Tap a present → open it into its tiered reward, log it, shelve keepsakes,
+  // and fire the scripted banana / keepsake moments.
   function collectGift(gift) {
-    updateSave(s => ({
-      ...s,
-      pennies: s.pennies + gift.amount,
-      stats: { ...s.stats, totalPenniesEarned: s.stats.totalPenniesEarned + gift.amount },
-      pendingGifts: s.pendingGifts.filter(g => g.id !== gift.id),
-    }));
+    setTimeout(() => {
+      let bananaInfo = null;
+      updateSave(s => { const res = openGift(s, gift); bananaInfo = res.banana; return res.save; });
+
+      if (gift.tier === 'keepsake' && gift.banana && bananaInfo?.firstEver) {
+        showPetMoment({ emoji: '🍌', big: true, title: 'BANANA. A BANANA. FOR HER.',
+          line: 'She has never been so happy about anything. (Banana Collection started.)' });
+      } else if (gift.tier === 'keepsake') {
+        setGiftReveal({ ...gift, keepsake: true });
+      } else {
+        setGiftReveal(gift);
+      }
+    }, 0);
   }
 
   // ── Keepsake: backup & restore ──────────────────────────────────────────────
@@ -222,18 +293,23 @@ export default function RoomScreen({
   }
 
   // Pets currently visible. Boombox is painted into the early room images, so
-  // his overlay only renders once the room moves past BAKED_PETS_UP_TO.
+  // his overlay only renders once the room moves past BAKED_PETS_UP_TO. When
+  // both cats land on the shared cozy spot, their singles are suppressed and one
+  // snuggle sprite is shown instead.
+  const snuggling = bothSnuggling(save);
   const visiblePets = Object.keys(PETS)
     .map(petId => {
       if (petId === 'boombox' && roomStateIndex <= BAKED_PETS_UP_TO) return null;
       const st = save.pets[petId];
       if (!st?.unlocked || st.away || !st.spotId) return null;
+      if (snuggling && (petId === 'boombox' || petId === 'remy') && st.spotId === SHARED_SPOT) return null;
       const def = PETS[petId];
       const spot = getSpot(petId, st.spotId);
       if (!spot) return null;
-      return { petId, def, spot };
+      return { petId, def, spot, poseImg: poseImage(petId, st.pose) };
     })
     .filter(Boolean);
+  const snuggleSpot = snuggling ? getSpot('remy', SHARED_SPOT) : null;
 
   const unlockedAch = save.achievements.unlocked ?? {};
   const jarFill = Math.min(1, save.pennies / JAR_FULL_AT);
@@ -261,6 +337,7 @@ export default function RoomScreen({
         @keyframes giftBob { 0%,100% { transform: translate(-50%,0); } 50% { transform: translate(-50%,-6px); } }
         @keyframes welcomeIn { 0% { opacity: 0; transform: translate(-50%, -8px); } 100% { opacity: 1; transform: translate(-50%, 0); } }
         @keyframes petBreathe { 0%,100% { transform: translate(-50%,-50%) scale(1); } 50% { transform: translate(-50%,-50%) scale(1.015); } }
+        @keyframes petBreatheScale { 0%,100% { transform: scale(1); } 50% { transform: scale(1.02); } }
         @keyframes petTapPop { 0% { opacity: 0; transform: translate(-50%,0) scale(0.6); } 30% { opacity: 1; } 100% { opacity: 0; transform: translate(-50%,-40px) scale(1.1); } }
         @keyframes presentGlow { 0%,100% { filter: drop-shadow(0 0 6px rgba(245,200,80,0.6)); } 50% { filter: drop-shadow(0 0 14px rgba(245,200,80,0.95)); } }
         @keyframes arriveSparkle { 0% { opacity: 0; transform: translate(-50%,-50%) scale(0.5); } 40% { opacity: 1; transform: translate(-50%,-50%) scale(1.25); } 100% { opacity: 0; transform: translate(-50%,-50%) scale(1.6); } }
@@ -422,10 +499,16 @@ export default function RoomScreen({
       )}
 
       {/* Pets */}
-      {visiblePets.map(({ petId, def, spot }) => (
-        <Pet key={petId} def={def} spot={spot}
+      {visiblePets.map(({ petId, def, spot, poseImg }) => (
+        <Pet key={petId} def={def} spot={spot} poseImg={poseImg}
           reaction={petReactions[petId]} onTap={() => tapPet(petId)} />
       ))}
+
+      {/* Snuggle — both cats on the shared cozy spot, as one sprite */}
+      {snuggleSpot && (
+        <Pet def={{ name: 'Boombox & Remy' }} spot={{ ...snuggleSpot, scale: snuggleSpot.scale * 1.25 }}
+          poseImg={SNUGGLE_IMAGE} reaction={petReactions.boombox} onTap={tapSnuggle} />
+      )}
 
       {/* Arrival sparkle over the new pet's spot */}
       {arrival && (
@@ -436,19 +519,25 @@ export default function RoomScreen({
         }}>✨</div>
       )}
 
-      {/* Pending gifts */}
+      {/* Pending gifts — the present art for whoever left it, tap to open */}
       {save.pendingGifts.map(gift => {
         const pos = gift.position || { x: 50, y: 70 };
+        const present = presentImage(gift.from);
         return (
           <div key={gift.id} onPointerDown={() => collectGift(gift)} style={{
             position: 'absolute', left: `${pos.x}%`, top: `${pos.y}%`,
-            transform: 'translate(-50%, 0)',
+            transform: 'translate(-50%, -60%)',
             zIndex: (gift.zOrder ?? 6) + 1, cursor: 'pointer',
             animation: 'giftBob 1.6s ease-in-out infinite',
             WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation',
-            fontSize: 26, filter: 'drop-shadow(0 0 8px rgba(245,200,80,0.9))',
-            width: 44, height: 44, display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}>🎁</div>
+            width: present ? '14%' : 44, minWidth: 44, minHeight: 44,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            filter: 'drop-shadow(0 0 8px rgba(245,200,80,0.9))',
+          }} aria-label="A present">
+            {present
+              ? <img src={present} alt="present" draggable={false} style={{ width: '100%', height: 'auto', display: 'block' }} />
+              : <span style={{ fontSize: 26 }}>🎁</span>}
+          </div>
         );
       })}
 
@@ -519,6 +608,9 @@ export default function RoomScreen({
           >
             {save.music.lyricsEnabled ? '🎤' : '🎼'}
           </button>
+        )}
+        {(save.pets.boombox?.unlocked || save.pets.remy?.unlocked) && (
+          <button onPointerDown={() => setOverviewOpen(true)} style={hudBtn} aria-label="Where are the pets">🐾</button>
         )}
         <button onPointerDown={() => setStatsOpen(true)} style={hudBtn} aria-label="Record book">📖</button>
         <button onPointerDown={onToggleMute} style={hudBtn} aria-label={muted ? 'Unmute' : 'Mute'}>
@@ -615,58 +707,107 @@ export default function RoomScreen({
         </Modal>
       )}
 
-      {/* ── Achievements tray viewer ── */}
-      {trayOpen && (
-        <Modal onClose={() => { setTrayOpen(false); setTrayDetail(null); }} wide>
-          <h3 style={{ margin: '0 0 2px', fontWeight: 'normal', color: '#5a3a1a', fontSize: 20 }}>The Type Tray</h3>
-          <p style={{ margin: '0 0 12px', fontSize: 12, color: '#8a6f50', fontStyle: 'italic' }}>
-            Every little thing you’ve done, kept safe.
-          </p>
-          <div style={{
-            display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 7,
-            maxHeight: '40dvh', overflowY: 'auto', padding: 2,
-          }}>
-            {ACHIEVEMENTS.map(a => {
-              const at = unlockedAch[a.id];
-              return (
-                <button key={a.id}
-                  onPointerDown={() => at && setTrayDetail(a.id)}
-                  style={{
-                    aspectRatio: '1', borderRadius: 10,
-                    border: '1.5px solid ' + (at ? '#cfa050' : 'rgba(150,110,60,0.2)'),
-                    background: at ? 'linear-gradient(135deg,#fff6dc,#f3e2ac)' : 'rgba(180,150,100,0.12)',
-                    fontSize: 20, cursor: at ? 'pointer' : 'default',
-                    opacity: at ? 1 : 0.5,
-                    filter: at ? 'none' : 'grayscale(1) blur(0.4px)',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation',
-                  }}
-                  aria-label={at ? a.name : 'Locked'}
-                >
-                  {at ? trinketEmoji(a) : '·'}
-                </button>
-              );
-            })}
-          </div>
-          {trayDetail && (() => {
-            const a = ACHIEVEMENTS.find(x => x.id === trayDetail);
-            const at = unlockedAch[trayDetail];
-            return (
-              <div style={{
-                marginTop: 12, padding: '10px 14px', borderRadius: 14, textAlign: 'left',
-                background: 'linear-gradient(135deg,#fff6dc,#f6e2a8)', border: '1.5px solid #d8b256',
-                animation: 'cardIn 0.3s ease-out both',
-              }}>
-                <div style={{ fontSize: 14, color: '#6a4310', fontWeight: 'bold' }}>{trinketEmoji(a)} {a.name}</div>
-                <div style={{ fontSize: 12, color: '#8a6a40', fontStyle: 'italic', margin: '3px 0' }}>{a.description}</div>
-                <div style={{ fontSize: 11, color: '#a07a40' }}>
-                  earned {new Date(at).toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' })}
-                </div>
+      {/* ── The Type Tray viewer (achievements / keepsakes / bananas / gifts) ── */}
+      {trayOpen && (() => {
+        const remyHasBananas = save.pets.remy?.unlocked;
+        const tabs = [
+          { id: 'achievements', label: '🏆' },
+          { id: 'keepsakes', label: '🗝️' },
+          ...(remyHasBananas ? [{ id: 'bananas', label: '🍌' }] : []),
+          { id: 'gifts', label: '🎁' },
+        ];
+        return (
+          <Modal onClose={() => { setTrayOpen(false); setTrayDetail(null); }} wide>
+            <h3 style={{ margin: '0 0 2px', fontWeight: 'normal', color: '#5a3a1a', fontSize: 20 }}>The Type Tray</h3>
+            <p style={{ margin: '0 0 10px', fontSize: 12, color: '#8a6f50', fontStyle: 'italic' }}>
+              Every little thing, kept safe.
+            </p>
+            <div style={{ display: 'flex', gap: 6, justifyContent: 'center', marginBottom: 12 }}>
+              {tabs.map(t => (
+                <button key={t.id} onPointerDown={() => { setTrayTab(t.id); setTrayDetail(null); }} style={{
+                  padding: '5px 12px', borderRadius: 12, fontSize: 16,
+                  border: '1.5px solid ' + (trayTab === t.id ? '#b8843c' : 'rgba(150,110,60,0.3)'),
+                  background: trayTab === t.id ? 'linear-gradient(135deg,#e8b45a,#c8862a)' : 'rgba(255,250,235,0.6)',
+                  cursor: 'pointer', WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation',
+                }}>{t.label}</button>
+              ))}
+            </div>
+
+            {trayTab === 'achievements' && (<>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 7, maxHeight: '38dvh', overflowY: 'auto', padding: 2 }}>
+                {ACHIEVEMENTS.map(a => {
+                  const at = unlockedAch[a.id];
+                  return (
+                    <button key={a.id} onPointerDown={() => at && setTrayDetail(a.id)} style={{
+                      aspectRatio: '1', borderRadius: 10,
+                      border: '1.5px solid ' + (at ? '#cfa050' : 'rgba(150,110,60,0.2)'),
+                      background: at ? 'linear-gradient(135deg,#fff6dc,#f3e2ac)' : 'rgba(180,150,100,0.12)',
+                      fontSize: 20, cursor: at ? 'pointer' : 'default', opacity: at ? 1 : 0.5,
+                      filter: at ? 'none' : 'grayscale(1) blur(0.4px)',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation',
+                    }} aria-label={at ? a.name : 'Locked'}>{at ? trinketEmoji(a) : '·'}</button>
+                  );
+                })}
               </div>
-            );
-          })()}
-        </Modal>
-      )}
+              {trayDetail && (() => {
+                const a = ACHIEVEMENTS.find(x => x.id === trayDetail); const at = unlockedAch[trayDetail];
+                return (
+                  <div style={trayDetailCard}>
+                    <div style={{ fontSize: 14, color: '#6a4310', fontWeight: 'bold' }}>{trinketEmoji(a)} {a.name}</div>
+                    <div style={{ fontSize: 12, color: '#8a6a40', fontStyle: 'italic', margin: '3px 0' }}>{a.description}</div>
+                    <div style={{ fontSize: 11, color: '#a07a40' }}>earned {new Date(at).toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' })}</div>
+                  </div>
+                );
+              })()}
+            </>)}
+
+            {trayTab === 'keepsakes' && (
+              (save.keepsakes ?? []).length === 0
+                ? <Empty>No keepsakes yet — they’re rare. The cats are working on it.</Empty>
+                : <div style={{ display: 'flex', flexDirection: 'column', gap: 7, maxHeight: '42dvh', overflowY: 'auto' }}>
+                    {save.keepsakes.map((k, i) => (
+                      <div key={i} style={trayListRow}>
+                        <span style={{ fontSize: 22 }}>🗝️</span>
+                        <div style={{ flex: 1, minWidth: 0, textAlign: 'left' }}>
+                          <div style={{ fontSize: 13.5, color: '#5a3a1a' }}>{k.name}</div>
+                          <div style={{ fontSize: 11.5, color: '#8a6f50', fontStyle: 'italic' }}>{k.line} · from {PETS[k.petId]?.name}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+            )}
+
+            {trayTab === 'bananas' && (() => {
+              const coll = save.pets.remy?.bananaCollection ?? { count: 0 };
+              return coll.count === 0
+                ? <Empty>Remy’s banana shelf is empty… for now. 🍌</Empty>
+                : <div style={{ textAlign: 'center' }}>
+                    <div style={{ fontSize: 14, color: '#5a3a1a', marginBottom: 8 }}>Remy’s Bananas — {coll.count}</div>
+                    <div style={{ fontSize: 26, lineHeight: 1.5, maxHeight: '40dvh', overflowY: 'auto' }}>
+                      {Array.from({ length: coll.count }).map((_, i) => <span key={i}>🍌</span>)}
+                    </div>
+                  </div>;
+            })()}
+
+            {trayTab === 'gifts' && (
+              (save.giftHistory ?? []).length === 0
+                ? <Empty>No gifts opened yet. Tap a present when you spot one.</Empty>
+                : <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: '42dvh', overflowY: 'auto' }}>
+                    {[...save.giftHistory].reverse().map((g, i) => (
+                      <div key={i} style={trayListRow}>
+                        <span style={{ fontSize: 18 }}>{g.tier === 'keepsake' ? '🗝️' : g.tier === 'bonus' ? '✨' : g.tier === 'found' ? '🎁' : '🪙'}</span>
+                        <div style={{ flex: 1, minWidth: 0, textAlign: 'left' }}>
+                          <div style={{ fontSize: 12.5, color: '#5a3a1a' }}>{g.name ?? `${g.amount} Pennies`}{g.name && g.amount > 0 ? ` · +${g.amount}🪙` : ''}</div>
+                          <div style={{ fontSize: 11, color: '#a07a40', fontStyle: 'italic' }}>from {PETS[g.from]?.name ?? '—'} · {g.date}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+            )}
+          </Modal>
+        );
+      })()}
 
       {/* ── The record book (stats) ── */}
       {statsOpen && (() => {
@@ -849,9 +990,115 @@ export default function RoomScreen({
           <div style={{ fontSize: 12, color: '#a07a40', fontStyle: 'italic' }}>♪ now playing ♪</div>
         </Modal>
       )}
+
+      {/* ── A sweet pet moment (milestone / "missed you" / banana) ── */}
+      {petMoment && (
+        <div key={petMoment.key} style={{
+          position: 'absolute', bottom: '20%', left: '50%', transform: 'translateX(-50%)',
+          zIndex: 33, pointerEvents: 'none', animation: 'cardIn 0.4s ease-out both',
+          background: 'linear-gradient(160deg,#fffdf2,#f3e6c4)', color: '#6a4a28',
+          border: '2px solid #d4aa60', borderRadius: 18, padding: '14px 22px',
+          maxWidth: '82%', textAlign: 'center', boxShadow: '0 6px 24px rgba(0,0,0,0.4)',
+        }}>
+          <div style={{ fontSize: petMoment.big ? 40 : 26, marginBottom: 4 }}>{petMoment.emoji}</div>
+          <div style={{ fontSize: petMoment.big ? 17 : 15, color: '#5a3a1a', fontWeight: 'bold', marginBottom: 3 }}>
+            {petMoment.title}
+          </div>
+          <div style={{ fontSize: 13, fontStyle: 'italic', lineHeight: 1.4 }}>{petMoment.line}</div>
+        </div>
+      )}
+
+      {/* ── Gift reveal (tap a present → its tiered reward) ── */}
+      {giftReveal && (
+        <Modal onClose={() => setGiftReveal(null)}>
+          <div style={{ fontSize: 34, marginBottom: 6 }}>
+            {giftReveal.tier === 'keepsake' ? '🗝️' : giftReveal.tier === 'bonus' ? '✨' : giftReveal.tier === 'found' ? '🎁' : '🪙'}
+          </div>
+          <div style={{ fontSize: 12, color: '#a07a40', fontStyle: 'italic', marginBottom: 6 }}>
+            from {PETS[giftReveal.from]?.name ?? 'a friend'}
+          </div>
+          {giftReveal.name && (
+            <div style={{ fontSize: 16, color: '#5a3a1a', marginBottom: 4 }}>{giftReveal.name}</div>
+          )}
+          {giftReveal.line && (
+            <p style={{ margin: '0 0 10px', fontSize: 13.5, color: '#8a6f50', fontStyle: 'italic', lineHeight: 1.45 }}>
+              {giftReveal.line}
+            </p>
+          )}
+          {giftReveal.amount > 0 && (
+            <div style={{ fontSize: 15, color: '#b8843c', fontWeight: 'bold' }}>+{giftReveal.amount} 🪙</div>
+          )}
+          {giftReveal.tier === 'keepsake' && (
+            <div style={{ fontSize: 11.5, color: '#a07a40', fontStyle: 'italic', marginTop: 4 }}>
+              kept forever in the type tray
+            </div>
+          )}
+        </Modal>
+      )}
+
+      {/* ── Where are the pets (overview roster) ── */}
+      {overviewOpen && (
+        <Modal onClose={() => setOverviewOpen(false)} wide>
+          <h3 style={{ margin: '0 0 10px', fontWeight: 'normal', color: '#5a3a1a', fontSize: 20 }}>The Household</h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {Object.keys(PETS).filter(id => save.pets[id]?.unlocked).map(id => {
+              const def = PETS[id], st = save.pets[id];
+              const ms = currentMilestone(id, st.bond);
+              const thumb = !st.away ? poseImage(id, st.pose) : null;
+              const owned = Object.entries(st.inventory ?? {}).filter(([, n]) => n > 0);
+              return (
+                <div key={id} style={{
+                  display: 'flex', alignItems: 'center', gap: 12, textAlign: 'left',
+                  background: 'rgba(255,250,235,0.6)', border: '1px solid rgba(150,110,60,0.25)',
+                  borderRadius: 12, padding: '8px 12px',
+                }}>
+                  <div style={{
+                    width: 52, height: 52, borderRadius: 12, flexShrink: 0, overflow: 'hidden',
+                    background: 'rgba(230,210,160,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 26,
+                  }}>
+                    {thumb ? <img src={thumb} alt={def.name} style={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : (st.away ? '🚶' : def.emoji)}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 15, color: '#5a3a1a' }}>{def.name} {ms && <span style={{ fontSize: 11, color: '#a07a40' }}>· {ms.name}</span>}</div>
+                    <div style={{ fontSize: 12, color: '#8a6f50', fontStyle: 'italic', marginTop: 1 }}>
+                      {petLocation(save, id)}
+                    </div>
+                    {owned.length > 0 && (
+                      <div style={{ fontSize: 12, marginTop: 2 }}>
+                        {owned.map(([k, n]) => `${treatEmoji(id, k)}${n > 1 ? `×${n}` : ''}`).join('  ')}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
+
+// Tiny emoji for an owned toy, for the overview inventory line.
+function treatEmoji(petId, toyKey) {
+  const map = { banana: '🍌', blanket: '🧣', wand: '🪶', castle: '🏰' };
+  return map[toyKey] ?? '🎀';
+}
+
+function Empty({ children }) {
+  return <div style={{ fontSize: 12.5, color: '#8a6f50', fontStyle: 'italic', textAlign: 'center', padding: '20px 8px' }}>{children}</div>;
+}
+
+const trayDetailCard = {
+  marginTop: 12, padding: '10px 14px', borderRadius: 14, textAlign: 'left',
+  background: 'linear-gradient(135deg,#fff6dc,#f6e2a8)', border: '1.5px solid #d8b256',
+  animation: 'cardIn 0.3s ease-out both',
+};
+const trayListRow = {
+  display: 'flex', alignItems: 'center', gap: 10,
+  background: 'rgba(255,250,235,0.6)', border: '1px solid rgba(150,110,60,0.25)',
+  borderRadius: 10, padding: '7px 11px',
+};
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
@@ -981,47 +1228,48 @@ function StatRow({ label, value }) {
   );
 }
 
-// A pet at a spot. Shows its pose image, or a clearly-marked placeholder when the
-// art doesn't exist yet. Gentle breathing loop = "alive". Tap → heart + reaction.
-function Pet({ def, spot, reaction, onTap }) {
-  const size = 12; // % of room width — ≥44px even on small phones
+// A pet at a spot: its pose sprite at the spot's scale, pinned by its anchor.
+//   feet_center — (x,y) is under the cat (on a surface): pin the sprite's
+//                 bottom-centre. body_center — pin the centre (cat IN something).
+// `scale` = sprite width as % of the room layer. Gentle breathing = "alive".
+function Pet({ def, spot, poseImg, reaction, onTap }) {
+  const scale = spot.scale ?? 18;
+  const anchor = spot.anchor ?? 'feet_center';
+  const ty = anchor === 'feet_center' ? '-100%' : '-50%';
   return (
     <div
       onPointerDown={onTap}
       style={{
         position: 'absolute', left: `${spot.position.x}%`, top: `${spot.position.y}%`,
-        width: `${size}%`, paddingTop: `${size}%`,
-        transform: 'translate(-50%,-50%)',
+        width: `${scale}%`, transform: `translate(-50%, ${ty})`,
         zIndex: spot.zOrder ?? 6, cursor: 'pointer',
-        animation: 'petBreathe 4s ease-in-out infinite',
         WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation',
       }}
     >
-      {spot.pose ? (
-        <img src={spot.pose} alt={def.name} draggable={false} style={{
-          position: 'absolute', inset: 0, width: '100%', height: '100%',
-          objectFit: 'contain',
-          filter: 'drop-shadow(0 3px 5px rgba(0,0,0,0.35))',
+      {poseImg ? (
+        <img src={poseImg} alt={def.name} draggable={false} style={{
+          width: '100%', height: 'auto', display: 'block',
+          filter: 'drop-shadow(0 5px 7px rgba(0,0,0,0.3))',
+          animation: 'petBreatheScale 4s ease-in-out infinite',
+          transformOrigin: 'bottom center',
         }} />
       ) : (
-        // Clearly-marked placeholder — replace by setting `pose` on the spot in petSpots.js
+        // Placeholder if the matte is missing (run `npm run matte-pets`)
         <div style={{
-          position: 'absolute', inset: 0, borderRadius: '50%',
-          background: def.placeholderColor,
-          border: '2px dashed rgba(255,255,255,0.5)',
+          width: '100%', aspectRatio: '1', borderRadius: '50%',
+          background: def.placeholderColor, border: '2px dashed rgba(255,255,255,0.5)',
           display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
           boxShadow: '0 3px 6px rgba(0,0,0,0.35)',
+          animation: 'petBreatheScale 4s ease-in-out infinite',
         }}>
           <span style={{ fontSize: 22, lineHeight: 1 }}>{def.emoji}</span>
-          <span style={{ fontSize: 8, color: 'rgba(40,25,10,0.8)', marginTop: 1 }}>{def.name}</span>
         </div>
       )}
 
-      {/* Tap reaction */}
       {reaction && (
         <div key={reaction.key} style={{
           position: 'absolute', top: -6, left: '50%',
-          fontSize: 20, pointerEvents: 'none',
+          fontSize: 22, pointerEvents: 'none',
           animation: 'petTapPop 1.1s ease-out forwards',
         }}>
           {reaction.emoji}
